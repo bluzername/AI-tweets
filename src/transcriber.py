@@ -1,0 +1,213 @@
+"""Audio transcription module using OpenAI Whisper API."""
+
+import os
+import logging
+import tempfile
+import requests
+from typing import Optional, Dict, Any
+from pathlib import Path
+import openai
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
+
+
+class WhisperTranscriber:
+    """Handles audio transcription using OpenAI Whisper API."""
+    
+    def __init__(self, api_key: str, model: str = "whisper-1"):
+        """
+        Initialize Whisper transcriber.
+        
+        Args:
+            api_key: OpenAI API key
+            model: Whisper model to use
+        """
+        self.client = openai.OpenAI(api_key=api_key)
+        self.model = model
+        self.max_file_size = 25 * 1024 * 1024  # 25MB limit
+    
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def transcribe_audio(self, audio_url: str, language: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Transcribe audio from URL using Whisper API.
+        
+        Args:
+            audio_url: URL of the audio file
+            language: Optional language code for transcription
+            
+        Returns:
+            Dictionary containing transcription and metadata
+        """
+        temp_file = None
+        try:
+            temp_file = self._download_audio(audio_url)
+            
+            if os.path.getsize(temp_file) > self.max_file_size:
+                logger.warning(f"Audio file exceeds 25MB limit: {audio_url}")
+                return self._handle_large_file(temp_file, language)
+            
+            with open(temp_file, 'rb') as audio_file:
+                params = {
+                    "model": self.model,
+                    "response_format": "verbose_json"
+                }
+                
+                if language:
+                    params["language"] = language
+                
+                response = self.client.audio.transcriptions.create(
+                    file=audio_file,
+                    **params
+                )
+                
+                result = {
+                    "text": response.text,
+                    "segments": getattr(response, 'segments', []),
+                    "language": getattr(response, 'language', language),
+                    "duration": getattr(response, 'duration', None)
+                }
+                
+                logger.info(f"Successfully transcribed audio: {audio_url[:50]}...")
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error transcribing audio {audio_url}: {e}")
+            raise
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+    
+    def _download_audio(self, url: str) -> str:
+        """
+        Download audio file to temporary location.
+        
+        Args:
+            url: URL of the audio file
+            
+        Returns:
+            Path to temporary file
+        """
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        suffix = self._get_file_extension(url, response.headers)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                temp_file.write(chunk)
+            
+            logger.info(f"Downloaded audio to {temp_file.name}")
+            return temp_file.name
+    
+    def _get_file_extension(self, url: str, headers: Dict) -> str:
+        """Extract file extension from URL or headers."""
+        content_type = headers.get('content-type', '')
+        
+        type_to_ext = {
+            'audio/mpeg': '.mp3',
+            'audio/mp4': '.m4a',
+            'audio/wav': '.wav',
+            'audio/x-wav': '.wav',
+            'audio/webm': '.webm'
+        }
+        
+        for mime_type, ext in type_to_ext.items():
+            if mime_type in content_type:
+                return ext
+        
+        from urllib.parse import urlparse
+        path = urlparse(url).path
+        if '.' in path:
+            return '.' + path.split('.')[-1]
+        
+        return '.mp3'
+    
+    def _handle_large_file(self, file_path: str, language: Optional[str]) -> Dict[str, Any]:
+        """
+        Handle large audio files by chunking or compression.
+        
+        Args:
+            file_path: Path to the audio file
+            language: Optional language code
+            
+        Returns:
+            Transcription result
+        """
+        logger.warning("Large file handling not fully implemented. Attempting direct transcription.")
+        
+        try:
+            from pydub import AudioSegment
+            
+            audio = AudioSegment.from_file(file_path)
+            
+            chunk_length = 10 * 60 * 1000
+            chunks = [audio[i:i+chunk_length] for i in range(0, len(audio), chunk_length)]
+            
+            transcriptions = []
+            for i, chunk in enumerate(chunks):
+                chunk_file = f"{file_path}_chunk_{i}.mp3"
+                chunk.export(chunk_file, format="mp3", bitrate="64k")
+                
+                try:
+                    with open(chunk_file, 'rb') as audio_file:
+                        response = self.client.audio.transcriptions.create(
+                            file=audio_file,
+                            model=self.model,
+                            language=language
+                        )
+                        transcriptions.append(response.text)
+                finally:
+                    os.remove(chunk_file)
+            
+            return {
+                "text": " ".join(transcriptions),
+                "segments": [],
+                "language": language,
+                "duration": len(audio) / 1000
+            }
+            
+        except ImportError:
+            logger.error("pydub not installed. Cannot handle large files.")
+            raise ValueError("Audio file too large and pydub not available for chunking")
+
+
+class TranscriptionCache:
+    """Simple cache for storing transcriptions."""
+    
+    def __init__(self, cache_dir: str = ".transcription_cache"):
+        """Initialize cache."""
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+    
+    def get(self, audio_url: str) -> Optional[Dict[str, Any]]:
+        """Get cached transcription if exists."""
+        import hashlib
+        import json
+        
+        cache_key = hashlib.md5(audio_url.encode()).hexdigest()
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r') as f:
+                    logger.info(f"Using cached transcription for {audio_url[:50]}...")
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error reading cache: {e}")
+        
+        return None
+    
+    def set(self, audio_url: str, transcription: Dict[str, Any]):
+        """Store transcription in cache."""
+        import hashlib
+        import json
+        
+        cache_key = hashlib.md5(audio_url.encode()).hexdigest()
+        cache_file = self.cache_dir / f"{cache_key}.json"
+        
+        try:
+            with open(cache_file, 'w') as f:
+                json.dump(transcription, f)
+                logger.info(f"Cached transcription for {audio_url[:50]}...")
+        except Exception as e:
+            logger.error(f"Error writing cache: {e}")
