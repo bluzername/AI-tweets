@@ -48,6 +48,9 @@ output/
 *.md
 !README.md
 !CLAUDE.md
+!LOCAL_SETUP.md
+!INSTALLATION.md
+!COST_OPTIMIZATION.md
 
 # Cache
 .transcription_cache/
