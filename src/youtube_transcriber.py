@@ -206,10 +206,10 @@ def find_youtube_urls(text: str) -> List[str]:
         return []
     
     patterns = [
-        r'https?://(?:www\.)?youtube\.com/watch\?[^\s]+',
-        r'https?://youtu\.be/[^\s]+',
-        r'https?://(?:www\.)?youtube\.com/embed/[^\s]+',
-        r'https?://(?:www\.)?youtube\.com/v/[^\s]+'
+        r'https?://(?:www\.)?youtube\.com/watch\?v=[a-zA-Z0-9_-]{11}(?:&[^"\s<>]*)?',
+        r'https?://youtu\.be/[a-zA-Z0-9_-]{11}(?:\?[^"\s<>]*)?',
+        r'https?://(?:www\.)?youtube\.com/embed/[a-zA-Z0-9_-]{11}(?:\?[^"\s<>]*)?',
+        r'https?://(?:www\.)?youtube\.com/v/[a-zA-Z0-9_-]{11}(?:\?[^"\s<>]*)?'
     ]
     
     urls = []

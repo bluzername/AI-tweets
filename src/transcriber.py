@@ -124,7 +124,7 @@ class WhisperTranscriber:
     
     def _handle_large_file(self, file_path: str, language: Optional[str]) -> Dict[str, Any]:
         """
-        Handle large audio files by chunking or compression.
+        Handle large audio files by attempting direct transcription or skipping.
         
         Args:
             file_path: Path to the audio file
@@ -133,42 +133,11 @@ class WhisperTranscriber:
         Returns:
             Transcription result
         """
-        logger.warning("Large file handling not fully implemented. Attempting direct transcription.")
+        logger.warning(f"Audio file exceeds 25MB limit. Skipping Whisper transcription for large file.")
         
-        try:
-            from pydub import AudioSegment
-            
-            audio = AudioSegment.from_file(file_path)
-            
-            chunk_length = 10 * 60 * 1000
-            chunks = [audio[i:i+chunk_length] for i in range(0, len(audio), chunk_length)]
-            
-            transcriptions = []
-            for i, chunk in enumerate(chunks):
-                chunk_file = f"{file_path}_chunk_{i}.mp3"
-                chunk.export(chunk_file, format="mp3", bitrate="64k")
-                
-                try:
-                    with open(chunk_file, 'rb') as audio_file:
-                        response = self.client.audio.transcriptions.create(
-                            file=audio_file,
-                            model=self.model,
-                            language=language
-                        )
-                        transcriptions.append(response.text)
-                finally:
-                    os.remove(chunk_file)
-            
-            return {
-                "text": " ".join(transcriptions),
-                "segments": [],
-                "language": language,
-                "duration": len(audio) / 1000
-            }
-            
-        except ImportError:
-            logger.error("pydub not installed. Cannot handle large files.")
-            raise ValueError("Audio file too large and pydub not available for chunking")
+        # For now, skip large files and let MultiTranscriber try other methods
+        # This prevents the pipeline from hanging on huge podcast files
+        raise ValueError("Audio file too large for Whisper API (>25MB). Consider using YouTube transcripts instead.")
 
 
 class TranscriptionCache:
