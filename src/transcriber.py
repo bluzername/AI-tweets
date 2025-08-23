@@ -25,7 +25,8 @@ class WhisperTranscriber:
         """
         self.client = openai.OpenAI(api_key=api_key)
         self.model = model
-        self.max_file_size = 25 * 1024 * 1024  # 25MB limit
+        self.max_file_size = 25 * 1024 * 1024  # 25MB API limit
+        self.use_chunking = True  # Use native API chunking for large files
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def transcribe_audio(self, audio_url: str, language: Optional[str] = None) -> Dict[str, Any]:
@@ -43,10 +44,6 @@ class WhisperTranscriber:
         try:
             temp_file = self._download_audio(audio_url)
             
-            if os.path.getsize(temp_file) > self.max_file_size:
-                logger.warning(f"Audio file exceeds 25MB limit: {audio_url}")
-                return self._handle_large_file(temp_file, language)
-            
             with open(temp_file, 'rb') as audio_file:
                 params = {
                     "model": self.model,
@@ -55,6 +52,12 @@ class WhisperTranscriber:
                 
                 if language:
                     params["language"] = language
+                
+                # Use native API chunking for large files
+                file_size = os.path.getsize(temp_file)
+                if file_size > self.max_file_size and self.use_chunking:
+                    logger.info(f"Large file ({file_size / 1024 / 1024:.1f}MB), using API chunking")
+                    params["chunking_strategy"] = {"type": "segment"}
                 
                 response = self.client.audio.transcriptions.create(
                     file=audio_file,
@@ -122,22 +125,6 @@ class WhisperTranscriber:
         
         return '.mp3'
     
-    def _handle_large_file(self, file_path: str, language: Optional[str]) -> Dict[str, Any]:
-        """
-        Handle large audio files by attempting direct transcription or skipping.
-        
-        Args:
-            file_path: Path to the audio file
-            language: Optional language code
-            
-        Returns:
-            Transcription result
-        """
-        logger.warning(f"Audio file exceeds 25MB limit. Skipping Whisper transcription for large file.")
-        
-        # For now, skip large files and let MultiTranscriber try other methods
-        # This prevents the pipeline from hanging on huge podcast files
-        raise ValueError("Audio file too large for Whisper API (>25MB). Consider using YouTube transcripts instead.")
 
 
 class TranscriptionCache:

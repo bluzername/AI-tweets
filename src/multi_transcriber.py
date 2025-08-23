@@ -6,6 +6,7 @@ from enum import Enum
 
 from .youtube_transcriber import YouTubeTranscriber, YouTubeTranscriptCache
 from .transcriber import WhisperTranscriber, TranscriptionCache
+from .local_whisper import LocalWhisperTranscriber, LocalWhisperCache, is_whisper_available
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ class TranscriptionMethod(Enum):
     """Supported transcription methods."""
     YOUTUBE = "youtube"
     WHISPER = "whisper" 
-    LOCAL_WHISPER = "local_whisper"  # For future implementation
+    LOCAL_WHISPER = "local_whisper"
 
 
 class MultiTranscriber:
@@ -23,6 +24,7 @@ class MultiTranscriber:
     def __init__(self, 
                  openai_api_key: str = None,
                  whisper_model: str = "whisper-1",
+                 local_whisper_model: str = "base",
                  preferred_methods: List[str] = None):
         """
         Initialize multi-source transcriber.
@@ -30,6 +32,7 @@ class MultiTranscriber:
         Args:
             openai_api_key: OpenAI API key for Whisper
             whisper_model: Whisper model to use
+            local_whisper_model: Local Whisper model size (tiny, base, small, medium, large)
             preferred_methods: Ordered list of methods to try
         """
         self.openai_api_key = openai_api_key
@@ -48,13 +51,29 @@ class MultiTranscriber:
             self.whisper_transcriber = None
             self.whisper_cache = None
         
-        # Set default method priority: free methods first
+        # Initialize local Whisper if available
+        if is_whisper_available():
+            self.local_whisper = LocalWhisperTranscriber(
+                model_size=local_whisper_model,
+                device="cpu"  # Default to CPU for compatibility
+            )
+            self.local_whisper_cache = LocalWhisperCache()
+        else:
+            self.local_whisper = None
+            self.local_whisper_cache = None
+        
+        # Set default method priority: free methods first, unlimited capacity second
         self.preferred_methods = preferred_methods or [
             TranscriptionMethod.YOUTUBE.value,
+            TranscriptionMethod.LOCAL_WHISPER.value,
             TranscriptionMethod.WHISPER.value
         ]
         
         logger.info(f"Initialized MultiTranscriber with methods: {self.preferred_methods}")
+        if self.local_whisper:
+            logger.info(f"✅ Local Whisper available: {local_whisper_model} model (unlimited file size)")
+        else:
+            logger.info("⚠️  Local Whisper not available. Install with: pip install openai-whisper")
     
     def transcribe_episode(self, 
                           audio_url: str, 
@@ -114,6 +133,9 @@ class MultiTranscriber:
         if method == TranscriptionMethod.YOUTUBE.value:
             return self._try_youtube_transcription(youtube_urls, title)
         
+        elif method == TranscriptionMethod.LOCAL_WHISPER.value:
+            return self._try_local_whisper_transcription(audio_url, title)
+        
         elif method == TranscriptionMethod.WHISPER.value:
             return self._try_whisper_transcription(audio_url, title)
         
@@ -156,6 +178,34 @@ class MultiTranscriber:
         logger.debug(f"No usable YouTube transcripts found for: {title}")
         return None
     
+    def _try_local_whisper_transcription(self, 
+                                       audio_url: str,
+                                       title: str) -> Optional[Dict[str, Any]]:
+        """Try local Whisper transcription."""
+        if not self.local_whisper:
+            logger.debug("Local Whisper not available (not installed)")
+            return None
+        
+        try:
+            # Check cache first
+            cached = self.local_whisper_cache.get(audio_url, self.local_whisper.model_size)
+            if cached:
+                logger.info(f"Using cached local Whisper transcription for: {title}")
+                return cached
+            
+            # Transcribe using local Whisper
+            result = self.local_whisper.transcribe_audio(audio_url)
+            
+            # Cache the result
+            if result:
+                self.local_whisper_cache.set(audio_url, self.local_whisper.model_size, result)
+            
+            return result
+            
+        except Exception as e:
+            logger.debug(f"Local Whisper transcription failed for {title}: {e}")
+            return None
+    
     def _try_whisper_transcription(self, 
                                  audio_url: str,
                                  title: str) -> Optional[Dict[str, Any]]:
@@ -189,6 +239,9 @@ class MultiTranscriber:
         if method == TranscriptionMethod.YOUTUBE.value:
             return "Cost: FREE"
         
+        elif method == TranscriptionMethod.LOCAL_WHISPER.value:
+            return "Cost: FREE (local processing)"
+        
         elif method == TranscriptionMethod.WHISPER.value:
             duration = result.get('duration', 0)
             if duration:
@@ -204,12 +257,16 @@ class MultiTranscriber:
         stats = {
             'methods_available': [],
             'youtube_enabled': True,
+            'local_whisper_enabled': self.local_whisper is not None,
             'whisper_enabled': self.whisper_transcriber is not None,
             'preferred_order': self.preferred_methods
         }
         
         if True:  # YouTube always available
             stats['methods_available'].append('youtube')
+        
+        if self.local_whisper:
+            stats['methods_available'].append('local_whisper')
         
         if self.whisper_transcriber:
             stats['methods_available'].append('whisper')
