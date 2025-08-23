@@ -10,11 +10,14 @@ from datetime import datetime
 
 from src.config import Config
 from src.rss_parser import RSSFeedParser, PodcastEpisode
-from src.transcriber import WhisperTranscriber, TranscriptionCache
+from src.multi_transcriber import MultiTranscriber
 from src.ai_analyzer import AIAnalyzer
 from src.thread_generator import ThreadGenerator, ThreadStyle
 from src.x_publisher import MultiAccountPublisher
 
+
+# Create logs directory if it doesn't exist
+Path("logs").mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,8 +48,11 @@ class PodcastTweetsPipeline:
             days_back=config.days_back
         )
         
-        self.transcriber = WhisperTranscriber(api_key=config.openai_api_key)
-        self.transcription_cache = TranscriptionCache()
+        self.transcriber = MultiTranscriber(
+            openai_api_key=config.openai_api_key,
+            whisper_model=config.whisper_model,
+            preferred_methods=getattr(config, 'transcription_methods', None)
+        )
         
         self.analyzer = AIAnalyzer(
             api_key=config.openai_api_key,
@@ -129,19 +135,14 @@ class PodcastTweetsPipeline:
         self._log_results(episode, results)
     
     def _transcribe_episode(self, episode: PodcastEpisode) -> Dict[str, Any]:
-        """Transcribe episode audio."""
-        cached = self.transcription_cache.get(episode.audio_url)
-        if cached:
-            logger.info(f"Using cached transcription for {episode.title}")
-            return cached
+        """Transcribe episode using best available method."""
+        logger.info(f"Transcribing episode: {episode.title}")
         
-        logger.info(f"Transcribing audio for {episode.title}")
-        transcription = self.transcriber.transcribe_audio(episode.audio_url)
-        
-        if transcription:
-            self.transcription_cache.set(episode.audio_url, transcription)
-        
-        return transcription
+        return self.transcriber.transcribe_episode(
+            audio_url=episode.audio_url,
+            youtube_urls=episode.youtube_urls or [],
+            title=episode.title
+        )
     
     def _analyze_episode(self, episode: PodcastEpisode, transcription: Dict[str, Any]) -> List:
         """Analyze episode transcription for highlights."""

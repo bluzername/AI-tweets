@@ -5,3 +5,4 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 tenacity>=8.2.3
 pydub>=0.25.1
+youtube-transcript-api>=0.6.2

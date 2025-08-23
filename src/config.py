@@ -93,6 +93,10 @@ class Config:
         self.max_highlights = int(os.getenv("MAX_HIGHLIGHTS", "3"))
         self.dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
         
+        # Transcription method preferences
+        transcription_methods_env = os.getenv("TRANSCRIPTION_METHODS", "youtube,whisper")
+        self.transcription_methods = [m.strip() for m in transcription_methods_env.split(",")]
+        
         self._load_config()
     
     def _load_config(self):
@@ -205,6 +209,10 @@ CASUAL_BEARER_TOKEN=your_x_bearer_token
 DAYS_BACK=7
 MAX_HIGHLIGHTS=3
 DRY_RUN=false
+
+# Transcription Methods (comma-separated, in order of preference)
+# Options: youtube, whisper, local_whisper
+TRANSCRIPTION_METHODS=youtube,whisper
 
 # Logging
 LOG_LEVEL=INFO

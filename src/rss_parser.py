@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from dataclasses import dataclass
+from .youtube_transcriber import find_youtube_urls
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,14 @@ class PodcastEpisode:
     published_date: datetime
     description: str
     duration: Optional[int] = None
+    youtube_urls: Optional[List[str]] = None
     
     def __repr__(self):
         return f"Episode: {self.podcast_name} - {self.title}"
+    
+    def has_youtube_url(self) -> bool:
+        """Check if episode has associated YouTube URLs."""
+        return bool(self.youtube_urls)
 
 
 class RSSFeedParser:
@@ -96,7 +102,8 @@ class RSSFeedParser:
                     audio_url=audio_url,
                     published_date=pub_date,
                     description=entry.get('summary', ''),
-                    duration=self._extract_duration(entry)
+                    duration=self._extract_duration(entry),
+                    youtube_urls=self._extract_youtube_urls(entry)
                 )
                 
                 episodes.append(episode)
@@ -162,3 +169,33 @@ class RSSFeedParser:
                 pass
         
         return None
+    
+    def _extract_youtube_urls(self, entry: Dict) -> Optional[List[str]]:
+        """Extract YouTube URLs from episode description and content."""
+        urls = []
+        
+        # Search in description/summary
+        description = entry.get('summary', '') or entry.get('content', '')
+        if description:
+            if isinstance(description, list):
+                description = ' '.join([str(item.get('value', '')) for item in description])
+            urls.extend(find_youtube_urls(str(description)))
+        
+        # Search in entry content
+        if 'content' in entry:
+            for content_item in entry.content:
+                urls.extend(find_youtube_urls(content_item.get('value', '')))
+        
+        # Search in links
+        if 'links' in entry:
+            for link in entry.links:
+                href = link.get('href', '')
+                if 'youtube.com' in href or 'youtu.be' in href:
+                    urls.append(href)
+        
+        # Remove duplicates and return
+        unique_urls = list(set(urls))
+        if unique_urls:
+            logger.info(f"Found YouTube URLs for episode '{entry.get('title', '')}': {unique_urls}")
+        
+        return unique_urls if unique_urls else None
