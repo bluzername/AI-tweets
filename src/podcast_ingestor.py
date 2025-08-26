@@ -91,6 +91,7 @@ class EpisodeDatabase:
                     content_extracted BOOLEAN DEFAULT 0,
                     tweets_generated INTEGER DEFAULT 0,
                     engagement_metrics TEXT,
+                    error_message TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -101,6 +102,13 @@ class EpisodeDatabase:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON episodes (processing_status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_published ON episodes (published_date)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_viral_score ON episodes (viral_score)")
+            
+            # Migration: Add error_message column if it doesn't exist
+            try:
+                conn.execute("SELECT error_message FROM episodes LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("Adding error_message column to episodes table")
+                conn.execute("ALTER TABLE episodes ADD COLUMN error_message TEXT")
     
     def episode_exists(self, episode_id: str) -> bool:
         """Check if episode already exists in database."""
@@ -158,7 +166,7 @@ class EpisodeDatabase:
                 episode_data = dict(row)
                 
                 # Remove database-specific fields that aren't part of PodcastEpisode
-                db_fields = ['created_at', 'updated_at']
+                db_fields = ['created_at', 'updated_at', 'error_message']
                 for field in db_fields:
                     episode_data.pop(field, None)
                 

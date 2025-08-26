@@ -63,4 +63,4 @@ htmlcov/
 
 # Config (keep example only)
 config.json
-!config.example.json
+!config.example.jsonviral_config.json

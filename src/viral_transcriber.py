@@ -387,7 +387,12 @@ class ViralTranscriber:
         )
         
         if not base_result or base_result.get('error'):
-            raise RuntimeError("All transcription methods failed")
+            logger.error("All transcription methods failed")
+            return ViralTranscriptionResult(
+                text="",
+                method="failed",
+                duration=0
+            )
         
         # Convert to viral result format
         viral_result = ViralTranscriptionResult(

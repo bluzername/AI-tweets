@@ -200,16 +200,22 @@ class PodcastsTLDRPipeline:
                 self.ingestor.mark_episode_processing(episode.episode_id)
                 
                 # Step 2: Transcribe with viral enhancements
-                transcription = self.transcriber.transcribe_for_viral_content(
-                    audio_url=episode.audio_url,
-                    youtube_urls=episode.youtube_urls or [],
-                    title=episode.title,
-                    language=None
-                )
-                
-                if not transcription.text:
-                    logger.warning(f"❌ Transcription failed for {episode.title}")
-                    self.ingestor.mark_episode_failed(episode.episode_id, "Transcription failed")
+                try:
+                    transcription = self.transcriber.transcribe_for_viral_content(
+                        audio_url=episode.audio_url,
+                        youtube_urls=episode.youtube_urls or [],
+                        title=episode.title,
+                        language=None
+                    )
+                    
+                    if not transcription or not transcription.text:
+                        logger.warning(f"❌ Transcription failed for {episode.title}")
+                        self.ingestor.mark_episode_failed(episode.episode_id, "Transcription returned empty result")
+                        continue
+                        
+                except Exception as transcription_error:
+                    logger.warning(f"❌ Transcription failed for {episode.title}: {transcription_error}")
+                    self.ingestor.mark_episode_failed(episode.episode_id, f"Transcription error: {str(transcription_error)}")
                     continue
                 
                 logger.info(f"✅ Transcribed {len(transcription.segments)} segments, {len(transcription.viral_moments)} viral moments")
