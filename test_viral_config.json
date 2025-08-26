@@ -1,0 +1,20 @@
+{
+  "podcast_feeds": [
+    "https://feeds.feedburner.com/venturesstories"
+  ],
+  "openai_api_key": "test_key",
+  "x_accounts": {
+    "podcasts_tldr": {
+      "consumer_key": "test",
+      "consumer_secret": "test",
+      "access_token": "test",
+      "access_token_secret": "test"
+    }
+  },
+  "transcription_methods": [
+    "youtube"
+  ],
+  "max_insights_per_episode": 3,
+  "min_viral_score": 0.3,
+  "posting_strategy": "optimal_time"
+}

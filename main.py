@@ -34,12 +34,13 @@ logger = logging.getLogger(__name__)
 class PodcastTweetsPipeline:
     """Main orchestrator for the podcast to tweets pipeline."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, local_whisper_model: str = "base"):
         """
         Initialize pipeline with configuration.
         
         Args:
             config: Configuration object
+            local_whisper_model: Local Whisper model size
         """
         self.config = config
         
@@ -51,6 +52,7 @@ class PodcastTweetsPipeline:
         self.transcriber = MultiTranscriber(
             openai_api_key=config.openai_api_key,
             whisper_model=config.whisper_model,
+            local_whisper_model=local_whisper_model,
             preferred_methods=getattr(config, 'transcription_methods', None)
         )
         
@@ -119,8 +121,12 @@ class PodcastTweetsPipeline:
         logger.info(f"Processing: {episode}")
         
         transcription = self._transcribe_episode(episode)
-        if not transcription:
-            logger.error(f"Failed to transcribe episode: {episode.title}")
+        if not transcription or transcription.get('error'):
+            logger.error(f"❌ Transcription failed for episode: {episode.title}")
+            if transcription and transcription.get('attempts'):
+                for attempt in transcription['attempts']:
+                    logger.error(f"  - {attempt['method']}: {attempt.get('status', 'unknown')} - {attempt.get('error', 'No error details')}")
+            logger.info(f"⏭️  Skipping episode '{episode.title}' due to transcription failure")
             return
         
         highlights = self._analyze_episode(episode, transcription)
@@ -251,6 +257,12 @@ def main():
         action="store_true",
         help="Don't actually post to X.com"
     )
+    parser.add_argument(
+        "--whisper-model",
+        choices=["tiny", "base", "small", "medium", "large"],
+        default="base",
+        help="Local Whisper model size (default: base)"
+    )
     
     args = parser.parse_args()
     
@@ -266,7 +278,7 @@ def main():
         logger.error("Invalid configuration. Please check your settings.")
         sys.exit(1)
     
-    pipeline = PodcastTweetsPipeline(config)
+    pipeline = PodcastTweetsPipeline(config, args.whisper_model)
     
     try:
         pipeline.run(

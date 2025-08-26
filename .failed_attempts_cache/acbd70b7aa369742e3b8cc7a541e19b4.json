@@ -1,0 +1,8 @@
+{
+  "audio_url": "https://dts.podtrac.com/redirect.mp3/stitcher.simplecastaudio.com/559b7461-a7b0-4341-b142-0ae492cb0a65/episodes/2ca408f7-d78d-49cb-99ac-039443fdbf0d/audio/128/default.mp3?aid=rss_feed&awCollectionId=559b7461-a7b0-4341-b142-0ae492cb0a65&awEpisodeId=2ca408f7-d78d-49cb-99ac-039443fdbf0d&feed=hNaFxXpO",
+  "method": "all_methods",
+  "error": "All transcription methods failed for: \"Olivia Colman\"",
+  "attempts": [],
+  "failed_at": "2025-08-26T02:17:44.458281",
+  "ttl_hours": 24
+}

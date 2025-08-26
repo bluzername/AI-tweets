@@ -7,6 +7,7 @@ from enum import Enum
 from .youtube_transcriber import YouTubeTranscriber, YouTubeTranscriptCache
 from .transcriber import WhisperTranscriber, TranscriptionCache
 from .local_whisper import LocalWhisperTranscriber, LocalWhisperCache, is_whisper_available
+from .failed_attempts_cache import FailedAttemptsCache
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,9 @@ class MultiTranscriber:
             self.local_whisper = None
             self.local_whisper_cache = None
         
+        # Initialize failed attempts cache
+        self.failed_attempts_cache = FailedAttemptsCache()
+        
         # Set default method priority: free methods first, unlimited capacity second
         self.preferred_methods = preferred_methods or [
             TranscriptionMethod.YOUTUBE.value,
@@ -92,6 +96,18 @@ class MultiTranscriber:
         """
         logger.info(f"Transcribing episode: {title}")
         
+        # Check if we've already failed this audio URL recently
+        failed_attempt = self.failed_attempts_cache.get(audio_url)
+        if failed_attempt:
+            logger.warning(f"⏭️  Skipping '{title}' - previous failure cached from {failed_attempt['failed_at']}")
+            return {
+                'text': '',
+                'error': f'Cached failure from {failed_attempt["method"]}: {failed_attempt["error"]}',
+                'attempts': failed_attempt['attempts'],
+                'method_used': None,
+                'cached_failure': True
+            }
+        
         # Track attempts and results
         attempts = []
         
@@ -114,11 +130,21 @@ class MultiTranscriber:
                 logger.warning(f"Failed to transcribe '{title}' using {method}: {e}")
                 continue
         
-        # All methods failed
-        logger.error(f"All transcription methods failed for: {title}")
+        # All methods failed - cache the failure
+        error_msg = f"All transcription methods failed for: {title}"
+        logger.error(error_msg)
+        
+        # Cache the failure to avoid retrying
+        self.failed_attempts_cache.set(
+            audio_url=audio_url,
+            method="all_methods",
+            error=error_msg,
+            attempts=attempts
+        )
+        
         return {
             'text': '',
-            'error': 'All transcription methods failed',
+            'error': error_msg,
             'attempts': attempts,
             'method_used': None
         }
