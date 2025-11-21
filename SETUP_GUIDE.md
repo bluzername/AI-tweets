@@ -72,13 +72,36 @@ git --version
 
 ### 3. Get API Keys
 
-You'll need accounts and API keys for:
+**RECOMMENDED: Use OpenRouter (Simplest Option)**
 
-1. **OpenAI** (required for transcription and AI analysis)
+**OpenRouter** provides access to GPT-4, Claude, Gemini, and 100+ AI models with a single API key:
+
+1. **OpenRouter** (single key for all AI models - RECOMMENDED)
+   - Sign up at https://openrouter.ai/
+   - Go to https://openrouter.ai/keys
+   - Create new API key
+   - Copy and save it (you won't see it again!)
+   - **That's it!** One key gives you access to all AI models
+   - View usage and costs at https://openrouter.ai/activity
+
+2. **Twitter/X API** (required for posting)
+   - Go to https://developer.twitter.com/
+   - Create a new app
+   - Generate API keys (need all 4):
+     - API Key
+     - API Secret
+     - Access Token
+     - Access Token Secret
+
+**ALTERNATIVE: Direct API Keys (Advanced)**
+
+If you prefer to manage separate API keys for each provider:
+
+1. **OpenAI** (required for transcription + GPT-4)
    - Sign up at https://platform.openai.com/
    - Go to API Keys section
    - Create new secret key
-   - Copy and save it (you won't see it again!)
+   - Save it
 
 2. **Anthropic Claude** (optional, for multi-model AI)
    - Sign up at https://console.anthropic.com/
@@ -91,14 +114,12 @@ You'll need accounts and API keys for:
    - Create API key
    - Save the key
 
-4. **Twitter/X API** (required for posting)
-   - Go to https://developer.twitter.com/
-   - Create a new app
-   - Generate API keys (need all 4):
-     - API Key
-     - API Secret
-     - Access Token
-     - Access Token Secret
+**Note:** OpenRouter is recommended because it:
+- Requires only ONE API key instead of three
+- Unified billing and cost tracking
+- Access to 100+ models beyond just GPT-4, Claude, and Gemini
+- Often has better pricing due to volume discounts
+- Easier to monitor usage in one place
 
 ---
 
@@ -168,27 +189,43 @@ code .env  # VSCode
 
 ### Step 3: Fill in Your API Keys
 
-Replace the placeholder values with your actual API keys:
+**OPTION 1: Using OpenRouter (RECOMMENDED - Simplest Setup)**
+
+If you're using OpenRouter, you only need 2 API keys total:
 
 ```bash
-# === REQUIRED API KEYS ===
+# === AI MODELS (via OpenRouter) ===
+USE_OPENROUTER=true
+OPENROUTER_API_KEY=sk-or-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
-# OpenAI (REQUIRED)
-OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# Twitter API (REQUIRED for posting)
+# === TWITTER API (REQUIRED for posting) ===
 TWITTER_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxx
 TWITTER_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWITTER_ACCESS_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWITTER_ACCESS_TOKEN_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
 
-# === OPTIONAL API KEYS (for enhanced features) ===
+**OPTION 2: Using Direct API Keys (Advanced)**
 
-# Anthropic Claude (for multi-model AI)
+If you're using separate API keys for each provider:
+
+```bash
+# === AI MODELS (Direct APIs) ===
+USE_OPENROUTER=false
+OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# Google AI (for multi-model AI)
 GOOGLE_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# === TWITTER API (REQUIRED for posting) ===
+TWITTER_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxx
+TWITTER_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWITTER_ACCESS_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWITTER_ACCESS_TOKEN_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+**Additional Configuration (applies to both options):**
+
+```bash
 
 # === AUTONOMOUS OPERATION SETTINGS ===
 

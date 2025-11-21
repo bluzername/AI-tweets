@@ -2,6 +2,10 @@
 """
 Multi-Model Insight Extractor - Ensemble AI Analysis
 Uses GPT-4, Claude (Anthropic), and Gemini (Google) for consensus-based insight extraction.
+
+Supports two modes:
+1. OpenRouter: Single API key for all models (recommended)
+2. Direct APIs: Separate keys for OpenAI, Anthropic, Google
 """
 
 import logging
@@ -18,11 +22,17 @@ logger = logging.getLogger(__name__)
 
 class AIModel(Enum):
     """Available AI models for ensemble."""
+    # Direct API model names
     GPT4 = "gpt-4"
     GPT4_TURBO = "gpt-4-turbo-preview"
     CLAUDE_SONNET = "claude-3-sonnet-20240229"
     CLAUDE_OPUS = "claude-3-opus-20240229"
     GEMINI_PRO = "gemini-pro"
+
+    # OpenRouter model names (when using USE_OPENROUTER=true)
+    OPENROUTER_GPT4_TURBO = "openai/gpt-4-turbo-preview"
+    OPENROUTER_CLAUDE_SONNET = "anthropic/claude-3-sonnet"
+    OPENROUTER_GEMINI_PRO = "google/gemini-pro-1.5"
 
 
 @dataclass
@@ -64,25 +74,48 @@ class MultiModelAnalyzer:
                  openai_api_key: Optional[str] = None,
                  anthropic_api_key: Optional[str] = None,
                  google_api_key: Optional[str] = None,
+                 openrouter_api_key: Optional[str] = None,
+                 use_openrouter: Optional[bool] = None,
                  enabled_models: Optional[List[AIModel]] = None):
         """
         Initialize multi-model analyzer.
 
         Args:
-            openai_api_key: OpenAI API key
-            anthropic_api_key: Anthropic API key
-            google_api_key: Google AI API key
+            openai_api_key: OpenAI API key (direct mode)
+            anthropic_api_key: Anthropic API key (direct mode)
+            google_api_key: Google AI API key (direct mode)
+            openrouter_api_key: OpenRouter API key (unified mode)
+            use_openrouter: Force OpenRouter mode (auto-detected if not specified)
             enabled_models: List of models to use (defaults to all available)
         """
 
-        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        self.anthropic_api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-        self.google_api_key = google_api_key or os.getenv("GOOGLE_API_KEY")
+        # Check if using OpenRouter
+        self.use_openrouter = use_openrouter
+        if self.use_openrouter is None:
+            # Auto-detect: use OpenRouter if key is set or USE_OPENROUTER=true
+            openrouter_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+            use_openrouter_env = os.getenv("USE_OPENROUTER", "false").lower() == "true"
+            self.use_openrouter = bool(openrouter_key) or use_openrouter_env
+
+        if self.use_openrouter:
+            logger.info("🔀 Using OpenRouter for unified AI model access")
+            self.openrouter_api_key = openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+            # Direct API keys not used in OpenRouter mode
+            self.openai_api_key = None
+            self.anthropic_api_key = None
+            self.google_api_key = None
+        else:
+            logger.info("🔑 Using direct API keys for each model")
+            self.openrouter_api_key = None
+            self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+            self.anthropic_api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+            self.google_api_key = google_api_key or os.getenv("GOOGLE_API_KEY")
 
         # Initialize clients
         self.openai_client = None
         self.anthropic_client = None
         self.google_client = None
+        self.openrouter_client = None
 
         self._init_clients()
 
@@ -97,46 +130,69 @@ class MultiModelAnalyzer:
     def _init_clients(self):
         """Initialize API clients for available models."""
 
-        # OpenAI (GPT-4)
-        if self.openai_api_key and self.openai_api_key != "your_openai_api_key_here":
-            try:
-                from openai import OpenAI
-                self.openai_client = OpenAI(api_key=self.openai_api_key)
-                logger.info("✅ OpenAI client initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to initialize OpenAI: {e}")
+        if self.use_openrouter:
+            # OpenRouter mode: Single client for all models
+            if self.openrouter_api_key and self.openrouter_api_key != "your_openrouter_api_key_here":
+                try:
+                    from openai import OpenAI
+                    self.openrouter_client = OpenAI(
+                        api_key=self.openrouter_api_key,
+                        base_url="https://openrouter.ai/api/v1"
+                    )
+                    logger.info("✅ OpenRouter client initialized (unified access to all models)")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to initialize OpenRouter: {e}")
+        else:
+            # Direct API mode: Separate clients for each provider
+            # OpenAI (GPT-4)
+            if self.openai_api_key and self.openai_api_key != "your_openai_api_key_here":
+                try:
+                    from openai import OpenAI
+                    self.openai_client = OpenAI(api_key=self.openai_api_key)
+                    logger.info("✅ OpenAI client initialized")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to initialize OpenAI: {e}")
 
-        # Anthropic (Claude)
-        if self.anthropic_api_key and self.anthropic_api_key != "your_anthropic_api_key_here":
-            try:
-                from anthropic import Anthropic
-                self.anthropic_client = Anthropic(api_key=self.anthropic_api_key)
-                logger.info("✅ Anthropic client initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to initialize Anthropic: {e}")
+            # Anthropic (Claude)
+            if self.anthropic_api_key and self.anthropic_api_key != "your_anthropic_api_key_here":
+                try:
+                    from anthropic import Anthropic
+                    self.anthropic_client = Anthropic(api_key=self.anthropic_api_key)
+                    logger.info("✅ Anthropic client initialized")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to initialize Anthropic: {e}")
 
-        # Google (Gemini)
-        if self.google_api_key and self.google_api_key != "your_google_api_key_here":
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=self.google_api_key)
-                self.google_client = genai
-                logger.info("✅ Google AI client initialized")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to initialize Google AI: {e}")
+            # Google (Gemini)
+            if self.google_api_key and self.google_api_key != "your_google_api_key_here":
+                try:
+                    import google.generativeai as genai
+                    genai.configure(api_key=self.google_api_key)
+                    self.google_client = genai
+                    logger.info("✅ Google AI client initialized")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to initialize Google AI: {e}")
 
     def _detect_available_models(self) -> List[AIModel]:
         """Detect which models are available based on API keys."""
         available = []
 
-        if self.openai_client:
-            available.append(AIModel.GPT4_TURBO)
+        if self.use_openrouter and self.openrouter_client:
+            # OpenRouter provides access to all models with one key
+            available.extend([
+                AIModel.OPENROUTER_GPT4_TURBO,
+                AIModel.OPENROUTER_CLAUDE_SONNET,
+                AIModel.OPENROUTER_GEMINI_PRO
+            ])
+        else:
+            # Direct API mode: check each provider
+            if self.openai_client:
+                available.append(AIModel.GPT4_TURBO)
 
-        if self.anthropic_client:
-            available.append(AIModel.CLAUDE_SONNET)
+            if self.anthropic_client:
+                available.append(AIModel.CLAUDE_SONNET)
 
-        if self.google_client:
-            available.append(AIModel.GEMINI_PRO)
+            if self.google_client:
+                available.append(AIModel.GEMINI_PRO)
 
         if not available:
             logger.warning("⚠️ No AI models available! Add API keys to .env")
@@ -206,7 +262,11 @@ class MultiModelAnalyzer:
             transcription, podcast_name, episode_title, max_insights
         )
 
-        if model in [AIModel.GPT4, AIModel.GPT4_TURBO]:
+        # OpenRouter models (use unified OpenAI-compatible API)
+        if model in [AIModel.OPENROUTER_GPT4_TURBO, AIModel.OPENROUTER_CLAUDE_SONNET, AIModel.OPENROUTER_GEMINI_PRO]:
+            return self._extract_openrouter(model, prompt)
+        # Direct API models
+        elif model in [AIModel.GPT4, AIModel.GPT4_TURBO]:
             return self._extract_openai(model, prompt)
         elif model in [AIModel.CLAUDE_SONNET, AIModel.CLAUDE_OPUS]:
             return self._extract_anthropic(model, prompt)
@@ -299,6 +359,53 @@ Return ONLY the JSON array, no other text."""
 
         except Exception as e:
             logger.error(f"OpenAI extraction failed: {e}")
+            return []
+
+    def _extract_openrouter(self, model: AIModel, prompt: str) -> List[ModelInsight]:
+        """Extract insights using OpenRouter (unified API for all models)."""
+
+        try:
+            response = self.openrouter_client.chat.completions.create(
+                model=model.value,
+                messages=[
+                    {"role": "system", "content": "You are an expert content analyst."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+
+            content = response.choices[0].message.content
+
+            # Parse JSON from response (some models wrap in markdown)
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+
+            result = json.loads(content)
+
+            # Handle both array and object with array field
+            if isinstance(result, list):
+                insights_data = result
+            elif "insights" in result:
+                insights_data = result["insights"]
+            else:
+                insights_data = []
+
+            return [
+                ModelInsight(
+                    text=item["text"],
+                    category=item["category"],
+                    viral_score=item["viral_score"],
+                    confidence=item["confidence"],
+                    reasoning=item.get("reasoning"),
+                    model=model.value
+                )
+                for item in insights_data
+            ]
+
+        except Exception as e:
+            logger.error(f"OpenRouter extraction failed for {model.value}: {e}")
             return []
 
     def _extract_anthropic(self, model: AIModel, prompt: str) -> List[ModelInsight]:
