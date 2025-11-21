@@ -51,6 +51,7 @@ output/
 !LOCAL_SETUP.md
 !INSTALLATION.md
 !COST_OPTIMIZATION.md
+!SETUP_GUIDE.md
 
 # Cache
 .transcription_cache/
@@ -64,3 +65,7 @@ htmlcov/
 # Config (keep example only)
 config.json
 !config.example.jsonviral_config.json
+
+# Data files (generated at runtime)
+data/*.db
+data/*.json

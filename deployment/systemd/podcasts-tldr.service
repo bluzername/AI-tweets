@@ -1,0 +1,40 @@
+[Unit]
+Description=Podcasts TLDR Autonomous Pipeline
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=podcasts
+Group=podcasts
+WorkingDirectory=/opt/podcasts-tldr
+Environment="PATH=/opt/podcasts-tldr/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/podcasts-tldr/.env
+
+# Main command
+ExecStart=/opt/podcasts-tldr/venv/bin/python3 src/autonomous_orchestrator.py
+
+# Restart policy
+Restart=always
+RestartSec=30
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=150%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=podcasts-tldr
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/podcasts-tldr/data /opt/podcasts-tldr/logs /opt/podcasts-tldr/output /opt/podcasts-tldr/cache /opt/podcasts-tldr/backups
+
+[Install]
+WantedBy=multi-user.target

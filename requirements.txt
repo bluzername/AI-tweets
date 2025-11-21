@@ -18,5 +18,16 @@ transformers>=4.30.0
 librosa>=0.10.1
 schedule>=1.2.0
 
+# Autonomous operation dependencies
+psutil>=5.9.0
+
+# Sprint 2: Multi-model AI and quality improvements
+anthropic>=0.18.0
+google-generativeai>=0.3.0
+
 # Optional: Local Whisper for unlimited transcription
 openai-whisper>=20231117
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
