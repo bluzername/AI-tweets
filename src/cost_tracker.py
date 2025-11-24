@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Cost Tracker - Monitor and optimize API costs.
-Tracks spending across OpenAI, Anthropic, and Google APIs.
+Tracks spending across OpenAI, Anthropic, Google APIs, and OpenRouter.
 """
 
 import logging
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class APICost:
     """Cost for a single API call."""
-    service: str  # "openai", "anthropic", "google"
+    service: str  # "openai", "anthropic", "google", "openrouter"
     operation: str  # "transcription", "completion", "embedding"
     model: str
     tokens_used: Optional[int]
@@ -54,6 +54,15 @@ class CostTracker:
         },
         "google": {
             "gemini-pro": {"input": 0.00025, "output": 0.0005},
+        },
+        "openrouter": {
+            # OpenRouter pricing (subject to change, check https://openrouter.ai/docs#models)
+            # Note: OpenRouter provides exact costs in API responses
+            "openai/gpt-4-turbo-preview": {"input": 0.01, "output": 0.03},
+            "anthropic/claude-3-sonnet": {"input": 0.003, "output": 0.015},
+            "anthropic/claude-3-opus": {"input": 0.015, "output": 0.075},
+            "google/gemini-pro-1.5": {"input": 0.00125, "output": 0.005},
+            "google/gemini-pro": {"input": 0.000125, "output": 0.000375},
         }
     }
 
