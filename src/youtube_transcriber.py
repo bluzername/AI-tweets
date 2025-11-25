@@ -53,7 +53,20 @@ class YouTubeTranscriber:
             logger.debug(f"Error parsing YouTube URL {url}: {e}")
         
         return None
-    
+
+    def get_thumbnail_url(self, video_id: str, quality: str = "maxresdefault") -> str:
+        """
+        Get YouTube thumbnail URL for a video.
+
+        Args:
+            video_id: YouTube video ID
+            quality: Thumbnail quality (maxresdefault, hqdefault, mqdefault, default)
+
+        Returns:
+            URL to YouTube thumbnail
+        """
+        return f"https://img.youtube.com/vi/{video_id}/{quality}.jpg"
+
     def get_transcript(self, video_id: str, languages: List[str] = None) -> Dict[str, Any]:
         """
         Get transcript for a YouTube video.

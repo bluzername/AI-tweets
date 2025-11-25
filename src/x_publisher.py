@@ -35,11 +35,13 @@ class XPublisher:
             fallback_dir: Directory for markdown fallback files
         """
         self.client = None
+        self.api = None  # For media upload (v1.1 API)
         self.fallback_dir = Path(fallback_dir)
         self.fallback_dir.mkdir(parents=True, exist_ok=True)
-        
+
         if all([api_key, api_secret, access_token, access_token_secret]):
             try:
+                # Initialize v2 API client for posting tweets
                 self.client = tweepy.Client(
                     bearer_token=bearer_token,
                     consumer_key=api_key,
@@ -48,10 +50,16 @@ class XPublisher:
                     access_token_secret=access_token_secret,
                     wait_on_rate_limit=True
                 )
-                logger.info("X.com client initialized successfully")
+
+                # Initialize v1.1 API for media upload
+                auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
+                self.api = tweepy.API(auth, wait_on_rate_limit=True)
+
+                logger.info("X.com client and API initialized successfully")
             except Exception as e:
                 logger.error(f"Failed to initialize X client: {e}")
                 self.client = None
+                self.api = None
         else:
             logger.warning("X.com credentials not provided. Will use markdown fallback.")
     
@@ -91,38 +99,74 @@ class XPublisher:
             logger.info("No X.com client available. Saving to markdown.")
             return self._save_to_markdown(thread, podcast_name, episode_title, account_name)
     
+    def _upload_media(self, media_path: str) -> Optional[str]:
+        """
+        Upload media to Twitter and return media ID.
+
+        Args:
+            media_path: Path to media file
+
+        Returns:
+            Media ID string, or None if upload failed
+        """
+        if not self.api:
+            logger.warning("No API v1.1 client available for media upload")
+            return None
+
+        try:
+            media = self.api.media_upload(filename=media_path)
+            logger.info(f"Uploaded media: {media.media_id}")
+            return str(media.media_id)
+        except Exception as e:
+            logger.error(f"Failed to upload media: {e}")
+            return None
+
     def _post_to_x(self, thread: List[Tweet], account_name: str) -> Dict[str, Any]:
         """
         Post thread to X.com.
-        
+
         Args:
             thread: List of tweets
             account_name: Account name for logging
-            
+
         Returns:
             Status dictionary
         """
         posted_tweets = []
         previous_tweet_id = None
-        
+
         try:
             for tweet in thread:
+                # Upload media if tweet has it
+                media_ids = None
+                if tweet.has_media and tweet.media_url:
+                    media_id = self._upload_media(tweet.media_url)
+                    if media_id:
+                        media_ids = [media_id]
+                        logger.info(f"Attached media to tweet {tweet.position}")
+
+                # Post tweet with or without media
                 if previous_tweet_id:
                     response = self.client.create_tweet(
                         text=tweet.content,
-                        in_reply_to_tweet_id=previous_tweet_id
+                        in_reply_to_tweet_id=previous_tweet_id,
+                        media_ids=media_ids
                     )
                 else:
-                    response = self.client.create_tweet(text=tweet.content)
-                
+                    response = self.client.create_tweet(
+                        text=tweet.content,
+                        media_ids=media_ids
+                    )
+
                 tweet_id = response.data['id']
                 posted_tweets.append({
                     "position": tweet.position,
                     "tweet_id": tweet_id,
-                    "content": tweet.content
+                    "content": tweet.content,
+                    "has_media": tweet.has_media
                 })
                 previous_tweet_id = tweet_id
-                
+
                 logger.info(f"Posted tweet {tweet.position} for {account_name}")
             
             return {

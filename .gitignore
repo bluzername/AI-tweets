@@ -28,6 +28,7 @@ env/
 
 # Environment variables
 .env
+.env.*
 .env.local
 .env.*.local
 
@@ -42,6 +43,7 @@ env/
 # Logs
 *.log
 logs/
+/tmp/*.log
 
 # Output
 output/
@@ -56,6 +58,9 @@ output/
 # Cache
 .transcription_cache/
 *.cache
+cache/
+.local_whisper_cache/
+.failed_attempts_cache
 
 # Testing
 .pytest_cache/
@@ -64,7 +69,8 @@ htmlcov/
 
 # Config (keep example only)
 config.json
-!config.example.jsonviral_config.json
+viral_config.json
+!config.example.json
 
 # Data files (generated at runtime)
 data/*.db

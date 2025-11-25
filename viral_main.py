@@ -8,9 +8,24 @@ import logging
 import sys
 import argparse
 import json
+import os
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
+from dotenv import load_dotenv
+
+# Rich library for beautiful terminal UI
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+from rich.panel import Panel
+from rich.text import Text
+from rich.table import Table
+from rich.live import Live
+from rich import box
+
+# Load environment variables
+load_dotenv()
 
 # Import all viral content components
 from src.podcast_ingestor import PodcastIngestor
@@ -19,6 +34,9 @@ from src.viral_insight_extractor import ViralContentAnalyzer, InsightDatabase
 from src.viral_tweet_crafter import ViralTweetCrafter
 from src.viral_scheduler import ViralScheduler, PostingStrategy
 from src.web_interface import create_app, create_templates
+
+# Initialize Rich console
+console = Console()
 
 # Set up logging
 logging.basicConfig(
@@ -47,18 +65,42 @@ class PodcastsTLDRPipeline:
     
     def __init__(self, config_file: str = "viral_config.json"):
         """Initialize the complete viral content pipeline."""
-        self.config = self._load_config(config_file)
-        
-        # Initialize data directories
-        Path("data").mkdir(exist_ok=True)
-        Path("logs").mkdir(exist_ok=True)
-        Path("cache").mkdir(exist_ok=True)
-        Path("output").mkdir(exist_ok=True)
-        
-        # Initialize components
-        self._init_components()
-        
-        logger.info("🎯 Podcasts TLDR Pipeline initialized successfully!")
+        # Show beautiful ASCII art header
+        self._show_header()
+
+        with console.status("[bold cyan]Initializing pipeline...", spinner="dots"):
+            self.config = self._load_config(config_file)
+
+            # Initialize data directories
+            Path("data").mkdir(exist_ok=True)
+            Path("logs").mkdir(exist_ok=True)
+            Path("cache").mkdir(exist_ok=True)
+            Path("output").mkdir(exist_ok=True)
+
+            # Initialize components
+            self._init_components()
+
+        console.print("✅ [bold green]Podcasts TLDR Pipeline initialized successfully![/bold green]")
+
+    def _show_header(self):
+        """Display beautiful ASCII art header."""
+        header_art = """
+╔═══════════════════════════════════════════════════════════════╗
+║                                                               ║
+║   🎙️  PODCASTS TLDR → X.COM THREADS PIPELINE  🚀             ║
+║                                                               ║
+║   Transform podcast episodes into viral educational threads   ║
+║   Local transcription • AI insights • Auto scheduling        ║
+║                                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+        """
+
+        console.print(Panel(
+            Text(header_art, style="bold cyan"),
+            border_style="bright_cyan",
+            box=box.DOUBLE
+        ))
+        console.print()
     
     def _load_config(self, config_file: str) -> Dict[str, Any]:
         """Load configuration with viral-specific settings."""
@@ -117,7 +159,18 @@ class PodcastsTLDRPipeline:
             # Create default config file
             with open(config_file, 'w') as f:
                 json.dump(default_config, f, indent=2)
-        
+
+        # Load Twitter credentials from environment if not in config
+        if default_config.get("x_accounts", {}).get("podcasts_tldr", {}).get("consumer_key") == "":
+            default_config["x_accounts"]["podcasts_tldr"] = {
+                "consumer_key": os.getenv("MAIN_API_KEY", ""),
+                "consumer_secret": os.getenv("MAIN_API_SECRET", ""),
+                "access_token": os.getenv("MAIN_ACCESS_TOKEN", ""),
+                "access_token_secret": os.getenv("MAIN_ACCESS_TOKEN_SECRET", ""),
+                "bearer_token": os.getenv("MAIN_BEARER_TOKEN", "")
+            }
+            logger.info("✅ Loaded Twitter API credentials from environment variables")
+
         return default_config
     
     def _init_components(self):
@@ -129,25 +182,49 @@ class PodcastsTLDRPipeline:
             max_episodes_per_feed=20
         )
         
+        # Configure OpenAI client to use OpenRouter if enabled
+        use_openrouter = os.getenv("USE_OPENROUTER", "").lower() == "true"
+
+        if use_openrouter:
+            api_key = os.getenv("OPENROUTER_API_KEY", "")
+            # Configure OpenAI client globally to use OpenRouter endpoint
+            openai_base_url = "https://openrouter.ai/api/v1"
+            logger.info("Using OpenRouter for AI models")
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "")
+            openai_base_url = None
+            logger.info("Using direct OpenAI API")
+
+        if not api_key:
+            logger.error("No API key found in environment variables!")
+            raise ValueError("API key required (OPENROUTER_API_KEY or OPENAI_API_KEY)")
+
+        # Store config for components
+        self.api_key = api_key
+        self.openai_base_url = openai_base_url
+
         # 2. Viral Transcriber
         self.transcriber = ViralTranscriber(
-            openai_api_key=self.config["openai_api_key"],
+            openai_api_key=api_key,
             preferred_methods=self.config["transcription_methods"],
             enable_speaker_id=True,
             enable_viral_detection=True
         )
-        
+
         # 3. Insight Extractor
         self.insight_analyzer = ViralContentAnalyzer(
-            openai_api_key=self.config["openai_api_key"],
-            model="gpt-4"
+            openai_api_key=api_key,
+            model="gpt-4-turbo-preview" if use_openrouter else "gpt-4",
+            base_url=openai_base_url
         )
+
         self.insight_db = InsightDatabase()
-        
+
         # 4. Tweet Crafter
         self.tweet_crafter = ViralTweetCrafter(
-            openai_api_key=self.config["openai_api_key"],
-            model="gpt-4"
+            openai_api_key=api_key,
+            model="gpt-4-turbo-preview" if use_openrouter else "gpt-4",
+            base_url=openai_base_url
         )
         
         # 5. Scheduler & Publisher
@@ -161,18 +238,33 @@ class PodcastsTLDRPipeline:
         Run podcast discovery and return new episode IDs.
         Step 1: Discover new viral episodes.
         """
-        logger.info("🔍 Running podcast discovery...")
-        
-        new_episodes = self.ingestor.discover_new_episodes()
-        
+        console.print("\n[bold cyan]🔍 STEP 1: Podcast Discovery[/bold cyan]")
+        console.print("─" * 60)
+
+        with console.status("[bold yellow]Scanning podcast feeds...", spinner="dots"):
+            new_episodes = self.ingestor.discover_new_episodes()
+
         if not new_episodes:
-            logger.info("No new episodes found")
+            console.print("[yellow]ℹ️  No new episodes found[/yellow]")
             return []
-        
-        # Log discoveries
+
+        # Display discoveries in a table
+        table = Table(title="📻 New Episodes Discovered", box=box.ROUNDED, show_header=True, header_style="bold magenta")
+        table.add_column("Podcast", style="cyan", no_wrap=False, width=25)
+        table.add_column("Episode", style="white", no_wrap=False, width=35)
+        table.add_column("Viral Score", justify="center", style="green")
+
         for episode in new_episodes:
-            logger.info(f"📻 Found: {episode.podcast_name} - {episode.title} (viral score: {episode.viral_score:.2f})")
-        
+            score_color = "green" if episode.viral_score >= 0.6 else "yellow" if episode.viral_score >= 0.4 else "red"
+            table.add_row(
+                episode.podcast_name,
+                episode.title[:60] + "..." if len(episode.title) > 60 else episode.title,
+                f"[{score_color}]{episode.viral_score:.2f}[/{score_color}]"
+            )
+
+        console.print(table)
+        console.print(f"[bold green]✅ Found {len(new_episodes)} new episode(s)[/bold green]\n")
+
         return [ep.episode_id for ep in new_episodes]
     
     def run_processing(self, episode_limit: int = 5) -> Dict[str, Any]:
@@ -180,123 +272,290 @@ class PodcastsTLDRPipeline:
         Run complete processing pipeline for pending episodes.
         Steps 2-4: Transcribe → Extract insights → Craft tweets.
         """
-        logger.info(f"⚡ Running processing pipeline (limit: {episode_limit})...")
-        
+        console.print("\n[bold cyan]⚡ STEP 2-4: Episode Processing Pipeline[/bold cyan]")
+        console.print("─" * 60)
+
         # Get episodes for processing
-        pending_episodes = self.ingestor.get_episodes_for_processing(episode_limit)
-        
+        with console.status("[bold yellow]Loading pending episodes...", spinner="dots"):
+            pending_episodes = self.ingestor.get_episodes_for_processing(episode_limit)
+
         if not pending_episodes:
-            logger.info("No episodes pending processing")
+            console.print("[yellow]ℹ️  No episodes pending processing[/yellow]")
             return {"processed": 0, "tweets_created": 0}
-        
+
+        console.print(f"[bold white]Processing {len(pending_episodes)} episode(s)...[/bold white]\n")
+
         total_tweets = 0
         processed_count = 0
-        
-        for episode in pending_episodes:
-            try:
-                logger.info(f"🎙️ Processing: {episode.podcast_name} - {episode.title}")
-                
-                # Mark as processing
-                self.ingestor.mark_episode_processing(episode.episode_id)
-                
-                # Step 2: Transcribe with viral enhancements
+
+        # Create overall progress bar
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(complete_style="green", finished_style="bold green"),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console
+        ) as overall_progress:
+
+            episodes_task = overall_progress.add_task(
+                "[cyan]Processing episodes",
+                total=len(pending_episodes)
+            )
+
+            for episode in pending_episodes:
                 try:
-                    transcription = self.transcriber.transcribe_for_viral_content(
-                        audio_url=episode.audio_url,
-                        youtube_urls=episode.youtube_urls or [],
-                        title=episode.title,
-                        language=None
+                    # Display current episode
+                    console.print(f"\n[bold white]🎙️  {episode.podcast_name}[/bold white]")
+                    console.print(f"[dim]{episode.title[:80]}...[/dim]\n")
+
+                    # Mark as processing
+                    self.ingestor.mark_episode_processing(episode.episode_id)
+
+                    # Step 2: Transcribe with viral enhancements
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Transcribing audio",
+                        total=100
                     )
-                    
-                    if not transcription or not transcription.text:
-                        logger.warning(f"❌ Transcription failed for {episode.title}")
-                        self.ingestor.mark_episode_failed(episode.episode_id, "Transcription returned empty result")
-                        continue
-                        
-                except Exception as transcription_error:
-                    logger.warning(f"❌ Transcription failed for {episode.title}: {transcription_error}")
-                    self.ingestor.mark_episode_failed(episode.episode_id, f"Transcription error: {str(transcription_error)}")
-                    continue
-                
-                logger.info(f"✅ Transcribed {len(transcription.segments)} segments, {len(transcription.viral_moments)} viral moments")
-                
-                # Step 3: Extract viral insights
-                insights = self.insight_analyzer.extract_viral_insights(
-                    transcription=transcription,
-                    podcast_name=episode.podcast_name,
-                    episode_title=episode.title,
-                    max_insights=self.config["max_insights_per_episode"]
-                )
-                
-                # Filter by viral score threshold
-                viral_insights = [
-                    insight for insight in insights 
-                    if insight.viral_score >= self.config["min_viral_score"]
-                ]
-                
-                if not viral_insights:
-                    logger.warning(f"⚠️ No viral insights found for {episode.title}")
-                    self.ingestor.mark_episode_completed(episode.episode_id, insights_count=0)
-                    continue
-                
-                logger.info(f"💡 Extracted {len(viral_insights)} viral insights")
-                
-                # Save insights to database
-                self.insight_db.save_insights(viral_insights, episode.episode_id)
-                
-                # Step 4: Craft viral tweets for each account
-                account_tweets = {}
-                
-                for account_name in self.config["x_accounts"].keys():
-                    account_tweets[account_name] = []
-                    
-                    for insight in viral_insights:
-                        # Determine formats based on content mix
-                        formats = self._select_formats_for_insight(insight)
-                        
-                        # Craft tweets
-                        tweets = self.tweet_crafter.craft_viral_tweets(
-                            insight=insight,
-                            podcast_name=episode.podcast_name,
-                            episode_title=episode.title,
-                            formats=formats
+
+                    try:
+                        overall_progress.update(step_task, advance=10)
+                        transcription = self.transcriber.transcribe_for_viral_content(
+                            audio_url=episode.audio_url,
+                            youtube_urls=episode.youtube_urls or [],
+                            title=episode.title,
+                            language=None
                         )
-                        
-                        account_tweets[account_name].extend(tweets)
-                
-                # Step 5: Schedule tweets
-                for account_name, tweets in account_tweets.items():
-                    if tweets:
+                        overall_progress.update(step_task, advance=90)
+
+                        if not transcription or not transcription.text:
+                            overall_progress.remove_task(step_task)
+                            console.print("[red]❌ Transcription failed - empty result[/red]")
+                            self.ingestor.mark_episode_failed(episode.episode_id, "Transcription returned empty result")
+                            overall_progress.update(episodes_task, advance=1)
+                            continue
+
+                    except Exception as transcription_error:
+                        overall_progress.remove_task(step_task)
+                        console.print(f"[red]❌ Transcription error: {str(transcription_error)[:60]}...[/red]")
+                        self.ingestor.mark_episode_failed(episode.episode_id, f"Transcription error: {str(transcription_error)}")
+                        overall_progress.update(episodes_task, advance=1)
+                        continue
+
+                    overall_progress.remove_task(step_task)
+                    console.print(f"[green]  ✓ Transcribed {len(transcription.segments)} segments[/green]")
+
+                    # Step 3: Extract key educational points
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Extracting key points",
+                        total=100
+                    )
+
+                    overall_progress.update(step_task, advance=20)
+                    key_points = self.insight_analyzer.extract_key_points(
+                        transcription=transcription,
+                        podcast_name=episode.podcast_name,
+                        episode_title=episode.title,
+                        num_points=self.config.get("key_points_per_episode", 5)
+                    )
+                    overall_progress.update(step_task, advance=80)
+
+                    if not key_points or len(key_points) < 5:
+                        overall_progress.remove_task(step_task)
+                        console.print("[red]❌ Could not extract 5 key points[/red]")
+                        self.ingestor.mark_episode_completed(episode.episode_id, insights_count=0)
+                        overall_progress.update(episodes_task, advance=1)
+                        continue
+
+                    overall_progress.remove_task(step_task)
+                    console.print(f"[green]  ✓ Extracted {len(key_points)} educational points[/green]")
+
+                    # Save insights to database
+                    self.insight_db.save_insights(key_points, episode.episode_id)
+
+                    # Step 3.5: Download thumbnail if YouTube URL available
+                    thumbnail_path = None
+                    if episode.youtube_urls and len(episode.youtube_urls) > 0:
+                        step_task = overall_progress.add_task(
+                            f"[yellow]  → Downloading thumbnail",
+                            total=100
+                        )
+
+                        try:
+                            from src.media_manager import MediaManager
+                            from src.youtube_transcriber import YouTubeTranscriber
+
+                            media_manager = MediaManager()
+                            yt_transcriber = YouTubeTranscriber()
+
+                            # Extract video ID from first YouTube URL
+                            video_id = yt_transcriber.extract_video_id(episode.youtube_urls[0])
+
+                            if video_id:
+                                # Get thumbnail URL
+                                thumbnail_url = yt_transcriber.get_thumbnail_url(video_id)
+
+                                # Download and cache
+                                thumbnail_path = media_manager.download_and_cache_image(
+                                    url=thumbnail_url,
+                                    identifier=video_id
+                                )
+
+                                if thumbnail_path:
+                                    overall_progress.update(step_task, advance=100)
+                                    overall_progress.remove_task(step_task)
+                                    console.print(f"[green]  ✓ Downloaded thumbnail[/green]")
+                                else:
+                                    overall_progress.remove_task(step_task)
+                                    console.print(f"[yellow]  ⚠ Thumbnail download failed[/yellow]")
+                            else:
+                                overall_progress.remove_task(step_task)
+                                console.print(f"[yellow]  ⚠ Could not extract video ID[/yellow]")
+
+                        except Exception as e:
+                            overall_progress.remove_task(step_task)
+                            console.print(f"[yellow]  ⚠ Thumbnail error: {str(e)[:40]}...[/yellow]")
+                            logger.warning(f"Thumbnail download failed: {e}")
+
+                    # Step 4: Get Twitter handles for episode
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Finding Twitter handles",
+                        total=100
+                    )
+
+                    from src.twitter_handle_finder import TwitterHandleFinder
+
+                    handle_finder = TwitterHandleFinder(self.config.get("podcast_handles", {}))
+                    podcast_handle, host_handles, guest_handles = handle_finder.get_all_handles_for_episode(
+                        podcast_name=episode.podcast_name,
+                        episode_title=episode.title,
+                        episode_description=episode.description
+                    )
+                    overall_progress.update(step_task, advance=100)
+
+                    overall_progress.remove_task(step_task)
+                    handles_found = [podcast_handle] + (host_handles or []) + (guest_handles or [])
+                    console.print(f"[green]  ✓ Found {len(handles_found)} handle(s): {', '.join(handles_found[:3])}...[/green]")
+
+                    # Step 5: Create ONE educational thread per episode (6 tweets)
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Generating thread",
+                        total=100
+                    )
+
+                    overall_progress.update(step_task, advance=20)
+                    thread = self.tweet_crafter.thread_builder.build_educational_thread(
+                        key_points=key_points,
+                        episode_title=episode.title,
+                        podcast_name=episode.podcast_name,
+                        podcast_handle=podcast_handle,
+                        host_handles=host_handles,
+                        guest_handles=guest_handles,
+                        episode_number=episode.episode_number
+                    )
+                    overall_progress.update(step_task, advance=80)
+
+                    if not thread or len(thread) != 6:
+                        overall_progress.remove_task(step_task)
+                        console.print("[red]❌ Failed to create valid 6-tweet thread[/red]")
+                        self.ingestor.mark_episode_failed(episode.episode_id, "Thread generation failed")
+                        overall_progress.update(episodes_task, advance=1)
+                        continue
+
+                    overall_progress.remove_task(step_task)
+                    console.print(f"[green]  ✓ Generated 6-tweet educational thread[/green]")
+
+                    # Step 6: Validate thread
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Validating thread",
+                        total=100
+                    )
+
+                    from src.content_validator import ContentValidator
+                    validator = ContentValidator()
+                    is_valid, errors = validator.validate_thread(thread)
+                    overall_progress.update(step_task, advance=100)
+
+                    if not is_valid:
+                        overall_progress.remove_task(step_task)
+                        console.print("[red]❌ Thread validation failed:[/red]")
+                        for error in errors:
+                            console.print(f"[red]     • {error}[/red]")
+                        self.ingestor.mark_episode_failed(episode.episode_id, f"Validation failed: {errors[0]}")
+                        overall_progress.update(episodes_task, advance=1)
+                        continue
+
+                    overall_progress.remove_task(step_task)
+                    console.print(f"[green]  ✓ Thread validated successfully[/green]")
+
+                    # Step 7: Schedule the thread
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Scheduling thread",
+                        total=100
+                    )
+
+                    for account_name in self.config["x_accounts"].keys():
                         strategy = PostingStrategy(self.config["posting_strategy"])
-                        
+
+                        # Convert thread to tweet objects
+                        from src.viral_tweet_crafter import ViralTweet
+                        thread_tweets = []
+                        for i, tweet in enumerate(thread):
+                            # Attach thumbnail to first tweet only
+                            has_media = (i == 0 and thumbnail_path is not None)
+                            tweet_obj = ViralTweet(
+                                content=tweet,
+                                format="thread",
+                                has_media=has_media,
+                                media_url=thumbnail_path if has_media else None,
+                                metadata={
+                                    "thread_position": i + 1,
+                                    "thread_total": 6,
+                                    "episode_id": episode.episode_id
+                                }
+                            )
+                            thread_tweets.append(tweet_obj)
+
                         scheduled_ids = self.scheduler.schedule_tweets(
-                            tweets=tweets,
+                            tweets=thread_tweets,
                             account_name=account_name,
                             episode_id=episode.episode_id,
                             podcast_name=episode.podcast_name,
                             strategy=strategy
                         )
-                        
+
                         total_tweets += len(scheduled_ids)
-                        logger.info(f"📅 Scheduled {len(scheduled_ids)} tweets for @{account_name}")
-                
-                # Mark episode as completed
-                self.ingestor.mark_episode_completed(
-                    episode.episode_id,
-                    insights_count=len(viral_insights),
-                    tweets_generated=total_tweets
-                )
-                
-                processed_count += 1
-                logger.info(f"✅ Completed processing: {episode.title}")
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing {episode.title}: {e}")
-                self.ingestor.mark_episode_failed(episode.episode_id, str(e))
-                continue
-        
-        logger.info(f"🎯 Processing complete: {processed_count} episodes, {total_tweets} tweets scheduled")
-        
+
+                    overall_progress.update(step_task, advance=100)
+                    overall_progress.remove_task(step_task)
+                    console.print(f"[green]  ✓ Scheduled 6-tweet thread[/green]")
+
+                    # Mark episode as completed
+                    self.ingestor.mark_episode_completed(
+                        episode.episode_id,
+                        insights_count=len(key_points),
+                        tweets_generated=6  # Always 6 tweets per episode
+                    )
+
+                    processed_count += 1
+                    console.print(f"\n[bold green]✅ Episode completed successfully![/bold green]")
+
+                    # Update overall progress
+                    overall_progress.update(episodes_task, advance=1)
+
+                except Exception as e:
+                    console.print(f"\n[bold red]❌ Error processing episode: {str(e)[:80]}...[/bold red]")
+                    logger.error(f"Error processing {episode.title}: {e}", exc_info=True)
+                    self.ingestor.mark_episode_failed(episode.episode_id, str(e))
+                    overall_progress.update(episodes_task, advance=1)
+                    continue
+
+        # Summary
+        console.print("\n" + "─" * 60)
+        console.print(f"[bold green]🎯 Processing Complete![/bold green]")
+        console.print(f"[white]   • Episodes processed: {processed_count}[/white]")
+        console.print(f"[white]   • Tweets scheduled: {total_tweets}[/white]\n")
+
         return {
             "processed": processed_count,
             "tweets_created": total_tweets,
@@ -308,10 +567,13 @@ class PodcastsTLDRPipeline:
         Start the automated scheduler.
         Step 5: Post tweets at optimal times.
         """
-        logger.info("🚀 Starting viral tweet scheduler...")
-        
-        self.scheduler.start_scheduler()
-        logger.info("✅ Scheduler running in background")
+        console.print("\n[bold cyan]🚀 STEP 5: Tweet Scheduler[/bold cyan]")
+        console.print("─" * 60)
+
+        with console.status("[bold yellow]Starting scheduler...", spinner="dots"):
+            self.scheduler.start_scheduler()
+
+        console.print("[bold green]✅ Scheduler running in background[/bold green]\n")
     
     def run_web_interface(self, port: int = 5000):
         """
@@ -326,35 +588,48 @@ class PodcastsTLDRPipeline:
         app = create_app()
         app.run(debug=False, host="0.0.0.0", port=port)
     
-    def run_full_pipeline(self, discovery: bool = True, processing: bool = True, 
+    def run_full_pipeline(self, discovery: bool = True, processing: bool = True,
                          episode_limit: int = 5) -> Dict[str, Any]:
         """
         Run the complete viral content pipeline.
         """
-        logger.info("🎯 Starting complete Podcasts TLDR pipeline...")
-        
+        start_time = datetime.now()
+
         results = {
             "discovery": {"new_episodes": 0},
             "processing": {"processed": 0, "tweets_created": 0},
-            "timestamp": datetime.now().isoformat()
+            "timestamp": start_time.isoformat()
         }
-        
+
         # Step 1: Discovery
         if discovery:
             new_episode_ids = self.run_discovery()
             results["discovery"]["new_episodes"] = len(new_episode_ids)
-        
+
         # Step 2-4: Processing
         if processing:
             processing_results = self.run_processing(episode_limit)
             results["processing"] = processing_results
-        
+
         # Step 5: Scheduler (runs in background)
         self.run_scheduler()
-        
-        logger.info("🎉 Pipeline execution complete!")
-        logger.info(f"📊 Results: {results}")
-        
+
+        # Display final summary
+        elapsed = (datetime.now() - start_time).total_seconds()
+
+        console.print("\n" + "═" * 60)
+        summary_table = Table(title="🎉 Pipeline Execution Complete!", box=box.DOUBLE_EDGE, show_header=True, header_style="bold magenta")
+        summary_table.add_column("Metric", style="cyan", width=30)
+        summary_table.add_column("Value", style="green", justify="right", width=20)
+
+        summary_table.add_row("New Episodes Discovered", str(results["discovery"]["new_episodes"]))
+        summary_table.add_row("Episodes Processed", str(results["processing"]["processed"]))
+        summary_table.add_row("Tweets Scheduled", str(results["processing"]["tweets_created"]))
+        summary_table.add_row("Execution Time", f"{elapsed:.1f}s")
+
+        console.print(summary_table)
+        console.print("═" * 60 + "\n")
+
         return results
     
     def _select_formats_for_insight(self, insight) -> List[str]:
@@ -382,11 +657,11 @@ class PodcastsTLDRPipeline:
     
     def get_stats(self) -> Dict[str, Any]:
         """Get comprehensive pipeline statistics."""
-        
+
         episode_stats = self.ingestor.db.get_pending_episodes(1000)  # Get all for counting
         tweet_stats = self.scheduler.queue.get_queue_stats()
-        
-        return {
+
+        stats = {
             "episodes": {
                 "total_discovered": len(episode_stats),
                 "pending_processing": len([ep for ep in episode_stats if ep.processing_status == "pending"]),
@@ -397,56 +672,94 @@ class PodcastsTLDRPipeline:
             "last_updated": datetime.now().isoformat()
         }
 
+        # Display stats beautifully with rich
+        console.print("\n" + "═" * 60)
+        console.print(Panel.fit(
+            "[bold cyan]📊 PIPELINE STATISTICS[/bold cyan]",
+            border_style="cyan"
+        ))
+
+        # Episodes table
+        episodes_table = Table(title="Episodes", box=box.ROUNDED, show_header=True, header_style="bold yellow")
+        episodes_table.add_column("Status", style="cyan")
+        episodes_table.add_column("Count", justify="right", style="white")
+
+        episodes_table.add_row("Total Discovered", str(stats["episodes"]["total_discovered"]))
+        episodes_table.add_row("Pending Processing", f"[yellow]{stats['episodes']['pending_processing']}[/yellow]")
+        episodes_table.add_row("Completed", f"[green]{stats['episodes']['completed']}[/green]")
+
+        console.print(episodes_table)
+
+        # Tweets table
+        tweets_table = Table(title="Tweets", box=box.ROUNDED, show_header=True, header_style="bold yellow")
+        tweets_table.add_column("Metric", style="cyan")
+        tweets_table.add_column("Value", justify="right", style="white")
+
+        for key, value in tweet_stats.items():
+            tweets_table.add_row(key.replace("_", " ").title(), str(value))
+
+        console.print(tweets_table)
+        console.print("═" * 60 + "\n")
+
+        return stats
+
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Podcasts TLDR Viral Content Machine")
     parser.add_argument("--config", default="viral_config.json", help="Configuration file")
-    parser.add_argument("--mode", choices=["discovery", "processing", "scheduler", "web", "full"], 
+    parser.add_argument("--mode", choices=["discovery", "processing", "scheduler", "web", "full"],
                        default="full", help="Pipeline mode to run")
     parser.add_argument("--episode-limit", type=int, default=5, help="Max episodes to process")
     parser.add_argument("--web-port", type=int, default=5000, help="Web interface port")
     parser.add_argument("--stats", action="store_true", help="Show pipeline statistics")
-    
+
     args = parser.parse_args()
-    
+
     try:
         # Initialize pipeline
         pipeline = PodcastsTLDRPipeline(args.config)
-        
+
         if args.stats:
             # Show statistics
-            stats = pipeline.get_stats()
-            print(json.dumps(stats, indent=2))
+            pipeline.get_stats()
             return
-        
+
         # Run based on mode
         if args.mode == "discovery":
             pipeline.run_discovery()
-        
+
         elif args.mode == "processing":
             pipeline.run_processing(args.episode_limit)
-        
+
         elif args.mode == "scheduler":
             pipeline.run_scheduler()
             # Keep running
             try:
+                console.print("[yellow]Press Ctrl+C to stop the scheduler[/yellow]")
                 while True:
                     time.sleep(60)
             except KeyboardInterrupt:
+                console.print("\n[yellow]Stopping scheduler...[/yellow]")
                 pipeline.scheduler.stop_scheduler()
-        
+                console.print("[green]✅ Scheduler stopped[/green]")
+
         elif args.mode == "web":
+            console.print(f"\n[bold cyan]🌐 Starting web interface on port {args.web_port}...[/bold cyan]")
             pipeline.run_web_interface(args.web_port)
-        
+
         elif args.mode == "full":
             pipeline.run_full_pipeline(episode_limit=args.episode_limit)
-        
-        logger.info("🎯 Pipeline execution completed successfully!")
-        
+
     except KeyboardInterrupt:
-        logger.info("Pipeline interrupted by user")
+        console.print("\n[yellow]⚠️  Pipeline interrupted by user[/yellow]")
     except Exception as e:
+        console.print(f"\n[bold red]❌ PIPELINE FAILED[/bold red]")
+        console.print(Panel(
+            f"[red]{str(e)}[/red]",
+            title="Error Details",
+            border_style="red"
+        ))
         logger.error(f"Pipeline failed: {e}", exc_info=True)
         sys.exit(1)
 

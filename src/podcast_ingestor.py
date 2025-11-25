@@ -8,6 +8,7 @@ import logging
 import hashlib
 import requests
 import feedparser
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Set
@@ -20,20 +21,25 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PodcastEpisode:
     """Enhanced episode representation with viral tracking."""
-    
+
     # Core episode data
     title: str
     podcast_name: str
     audio_url: str
     published_date: datetime
     description: str
-    
+
     # Enhanced metadata
     episode_number: Optional[str] = None
     duration: Optional[int] = None
     file_size: Optional[int] = None
     youtube_urls: Optional[List[str]] = None
-    
+    guest_names: Optional[List[str]] = None
+
+    # Media/visual content
+    thumbnail_url: Optional[str] = None
+    thumbnail_local_path: Optional[str] = None
+
     # Viral tracking
     episode_id: Optional[str] = None
     viral_score: Optional[float] = None
@@ -58,6 +64,8 @@ class PodcastEpisode:
         # Convert lists to JSON strings
         if self.youtube_urls:
             data['youtube_urls'] = ','.join(self.youtube_urls)
+        if self.guest_names:
+            data['guest_names'] = ','.join(self.guest_names)
         return data
 
 
@@ -109,6 +117,19 @@ class EpisodeDatabase:
             except sqlite3.OperationalError:
                 logger.info("Adding error_message column to episodes table")
                 conn.execute("ALTER TABLE episodes ADD COLUMN error_message TEXT")
+
+            # Migration: Add thumbnail fields if they don't exist
+            try:
+                conn.execute("SELECT thumbnail_url FROM episodes LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("Adding thumbnail_url column to episodes table")
+                conn.execute("ALTER TABLE episodes ADD COLUMN thumbnail_url TEXT")
+
+            try:
+                conn.execute("SELECT thumbnail_local_path FROM episodes LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("Adding thumbnail_local_path column to episodes table")
+                conn.execute("ALTER TABLE episodes ADD COLUMN thumbnail_local_path TEXT")
     
     def episode_exists(self, episode_id: str) -> bool:
         """Check if episode already exists in database."""
@@ -129,8 +150,8 @@ class EpisodeDatabase:
                 
                 # Insert or update
                 conn.execute("""
-                    INSERT OR REPLACE INTO episodes 
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                    INSERT OR REPLACE INTO episodes
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             COALESCE((SELECT created_at FROM episodes WHERE episode_id = ?), CURRENT_TIMESTAMP),
                             CURRENT_TIMESTAMP)
                 """, (
@@ -140,6 +161,9 @@ class EpisodeDatabase:
                     data['youtube_urls'], data['viral_score'], data['processing_status'],
                     data['transcription_method'], data['content_extracted'],
                     data['tweets_generated'], data['engagement_metrics'],
+                    data.get('error_message'),  # Add error_message field
+                    data.get('thumbnail_url'),  # Add thumbnail_url field
+                    data.get('thumbnail_local_path'),  # Add thumbnail_local_path field
                     data['episode_id']  # For the COALESCE query
                 ))
                 
@@ -166,7 +190,7 @@ class EpisodeDatabase:
                 episode_data = dict(row)
                 
                 # Remove database-specific fields that aren't part of PodcastEpisode
-                db_fields = ['created_at', 'updated_at', 'error_message']
+                db_fields = ['created_at', 'updated_at', 'error_message', 'insights_count', 'tweets_generated_count']
                 for field in db_fields:
                     episode_data.pop(field, None)
                 
@@ -351,19 +375,24 @@ class PodcastIngestor:
             
             # Extract YouTube URLs from description
             youtube_urls = self._extract_youtube_urls(entry.get('description', ''))
-            
+
             # Parse duration if available
             duration = self._parse_duration(entry)
-            
+
+            # Extract guest names from title
+            title = entry.get('title', 'Unknown Title').strip()
+            guest_names = self._extract_guest_names(title)
+
             episode = PodcastEpisode(
-                title=entry.get('title', 'Unknown Title').strip(),
+                title=title,
                 podcast_name=podcast_name.strip(),
                 audio_url=audio_url,
                 published_date=published_date,
                 description=entry.get('description', '').strip(),
                 episode_number=self._extract_episode_number(entry),
                 duration=duration,
-                youtube_urls=youtube_urls if youtube_urls else None
+                youtube_urls=youtube_urls if youtube_urls else None,
+                guest_names=guest_names if guest_names else None
             )
             
             return episode
@@ -468,9 +497,101 @@ class PodcastIngestor:
             match = re.search(pattern, title, re.IGNORECASE)
             if match:
                 return match.group(1)
-        
+
         return None
-    
+
+    def _extract_guest_names(self, title: str) -> List[str]:
+        """
+        Extract guest names from episode title.
+
+        Common patterns:
+        - "Episode Title | Guest Name"
+        - "Episode Title with Guest Name"
+        - "Guest Name: Episode Title"
+        - "Episode Title ft. Guest Name"
+        - "#NNN – Guest Name" (Lex Fridman style)
+
+        Args:
+            title: Episode title
+
+        Returns:
+            List of extracted guest names
+        """
+        guests = []
+
+        # Pattern 1: "Title | Guest Name"
+        if '|' in title:
+            parts = title.split('|')
+            if len(parts) >= 2:
+                potential_guest = parts[1].strip()
+                # Remove common suffixes
+                potential_guest = re.sub(r'\s+(PhD|MD|Dr\.|M\.D\.|Ph\.D\.).*$', '', potential_guest)
+                if potential_guest and len(potential_guest) > 3:
+                    guests.append(potential_guest)
+
+        # Pattern 2: "with Guest Name"
+        with_match = re.search(r'\bwith\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title)
+        if with_match:
+            guests.append(with_match.group(1).strip())
+
+        # Pattern 3: "ft. Guest Name" or "feat. Guest Name"
+        feat_match = re.search(r'\b(?:ft\.|feat\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title)
+        if feat_match:
+            guests.append(feat_match.group(1).strip())
+
+        # Pattern 4: "Guest Name:" at start
+        colon_match = re.match(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+):', title)
+        if colon_match:
+            guests.append(colon_match.group(1).strip())
+
+        # Pattern 5: "#NNN – Guest Name" (Lex Fridman style)
+        lex_match = re.match(r'^#\d+\s*[–-]\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', title)
+        if lex_match:
+            potential_guest = lex_match.group(1).strip()
+            # Remove topic suffix if present (e.g., "Name: Topic")
+            if ':' in potential_guest:
+                potential_guest = potential_guest.split(':')[0].strip()
+            guests.append(potential_guest)
+
+        # Deduplicate and filter
+        guests = list(set(guests))
+        guests = [g for g in guests if self._is_likely_person_name(g)]
+
+        return guests
+
+    def _is_likely_person_name(self, name: str) -> bool:
+        """
+        Check if a string is likely a person's name.
+
+        Args:
+            name: Potential name string
+
+        Returns:
+            True if likely a person name
+        """
+        # Must have at least first and last name
+        parts = name.split()
+        if len(parts) < 2:
+            return False
+
+        # Each part should start with capital letter
+        if not all(part[0].isupper() for part in parts if part):
+            return False
+
+        # Shouldn't be too long (likely a phrase, not a name)
+        if len(parts) > 4:
+            return False
+
+        # Exclude common non-name patterns
+        exclude_patterns = [
+            'Episode', 'Podcast', 'Show', 'Interview', 'Talk',
+            'Part', 'Series', 'Season', 'Special', 'Live'
+        ]
+        if any(pattern in name for pattern in exclude_patterns):
+            return False
+
+        return True
+
     def get_episodes_for_processing(self, limit: int = 5) -> List[PodcastEpisode]:
         """Get episodes ready for processing, prioritized by viral score."""
         return self.db.get_pending_episodes(limit)

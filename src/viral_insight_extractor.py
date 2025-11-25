@@ -12,9 +12,14 @@ from enum import Enum
 import openai
 from datetime import datetime
 
+# Rich library for beautiful output
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
 from .viral_transcriber import ViralTranscriptionResult
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 class InsightType(Enum):
@@ -74,9 +79,12 @@ class ViralInsight:
 class ViralContentAnalyzer:
     """Analyzes content for viral potential using multiple AI techniques."""
     
-    def __init__(self, openai_api_key: str, model: str = "gpt-4"):
+    def __init__(self, openai_api_key: str, model: str = "gpt-4", base_url: str = None):
         """Initialize viral content analyzer."""
-        self.client = openai.OpenAI(api_key=openai_api_key)
+        if base_url:
+            self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)
+        else:
+            self.client = openai.OpenAI(api_key=openai_api_key)
         self.model = model
         
         # Viral content patterns
@@ -141,10 +149,156 @@ class ViralContentAnalyzer:
         
         # 5. Enhance top insights with additional metadata
         final_insights = self._enhance_insights(ranked_insights[:max_insights], transcription)
-        
+
         logger.info(f"Extracted {len(final_insights)} viral insights")
         return final_insights
-    
+
+    def extract_key_points(self,
+                          transcription: ViralTranscriptionResult,
+                          podcast_name: str,
+                          episode_title: str,
+                          num_points: int = 5) -> List[ViralInsight]:
+        """
+        Extract key educational points from episode for TL;DR threads.
+
+        This method focuses on substance and education rather than virality.
+        Extracts the most important, useful, factual learnings from the entire episode.
+
+        Args:
+            transcription: Enhanced transcription with segments
+            podcast_name: Name of the podcast
+            episode_title: Episode title
+            num_points: Number of key points to extract (default 5)
+
+        Returns:
+            List of key educational insights covering the full episode
+        """
+        console.print(f"[dim]  Analyzing {len(transcription.text)} chars of transcript...[/dim]")
+
+        # Use larger chunk of transcript for comprehensive coverage
+        # GPT-4 Turbo has 128k context, so we can use much more
+        full_text = transcription.text[:100000]  # ~25k tokens, well within limits
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            task = progress.add_task(f"[yellow]Extracting {num_points} key points with AI...", total=None)
+
+            prompt = f"""
+You are an educational content curator analyzing a podcast episode for its key learnings.
+
+PODCAST: {podcast_name}
+EPISODE: {episode_title}
+
+TRANSCRIPT:
+{full_text}
+
+Extract the {num_points} most important, educational, and useful points from this ENTIRE episode.
+
+Requirements:
+1. COVER THE FULL EPISODE - Don't just extract from the beginning, ensure points span the whole conversation
+2. FACTUAL AND EDUCATIONAL - Focus on what people need to know, not what's clickbait
+3. STANDALONE CLARITY - Each point should make sense on its own
+4. POLISHED TEXT - Remove filler words (um, uh, you know, like), make complete sentences
+5. TWEET-READY - Max 280 characters per point, punchy and clear
+6. ACTIONABLE - When possible, include what the listener can do with this information
+
+For each point, provide:
+- point_number: 1-{num_points}
+- text: The polished, tweet-ready insight (max 280 chars)
+- speaker: Who said this (if identifiable from context)
+- importance: Why this matters to the audience (1 sentence)
+- timestamp_estimate: Approximate timestamp in seconds (estimate from position in transcript)
+- actionable: Optional action the listener can take based on this
+
+Return ONLY valid JSON object with a "points" array of {num_points} points, sorted by their order in the episode:
+
+{{
+  "points": [
+    {{
+      "point_number": 1,
+      "text": "Polished insight here...",
+      "speaker": "Speaker Name or Unknown",
+      "importance": "Why this matters...",
+      "timestamp_estimate": 300,
+      "actionable": "What to do with this info..."
+    }}
+  ]
+}}
+
+CRITICAL:
+- Make text PERFECT for Twitter - no filler words, complete thoughts
+- Focus on SUBSTANCE not style
+- Each point should teach something valuable
+- DO NOT use clickbait language or hooks
+"""
+
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert educational content curator who extracts key learnings from podcasts."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3  # Lower temperature for more factual output
+                )
+
+                result = response.choices[0].message.content
+
+                # Parse JSON response
+                import json
+                try:
+                    data = json.loads(result)
+                except json.JSONDecodeError as json_err:
+                    progress.stop()
+                    console.print(f"[red]  ✗ JSON parsing error: {str(json_err)[:60]}...[/red]")
+                    logger.error(f"JSON parsing error: {json_err}")
+                    logger.error(f"Raw response: {result[:500]}")
+                    return []
+
+                # Handle both array and object with array responses
+                if isinstance(data, dict):
+                    points_data = data.get('points', data.get('key_points', []))
+                else:
+                    points_data = data
+
+                if not points_data:
+                    progress.stop()
+                    console.print("[red]  ✗ No key points extracted from AI response[/red]")
+                    logger.error(f"No key points extracted from AI response. Data structure: {type(data)}")
+                    logger.error(f"Available keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                    return []
+
+                # Convert to ViralInsight objects
+                insights = []
+                for point_data in points_data[:num_points]:
+                    insight = ViralInsight(
+                        text=point_data.get('text', '').strip(),
+                        insight_type=InsightType.KEY_CONCEPT,  # All are educational concepts
+                        timestamp=point_data.get('timestamp_estimate', 0),
+                        speaker=point_data.get('speaker', 'Unknown'),
+                        viral_score=0.7,  # Educational value score
+                        confidence=0.9,
+                        hashtags=[],
+                        engagement_potential={'type': 'educational', 'value': 'high'},
+                        tweet_formats=['thread'],
+                        extraction_method="ai_key_points"
+                    )
+                    insights.append(insight)
+
+                console.print(f"[dim]  ✓ Extracted {len(insights)} key educational points[/dim]")
+                return insights
+
+            except Exception as e:
+                progress.stop()
+                console.print(f"[red]  ✗ AI extraction error: {str(e)[:60]}...[/red]")
+                logger.error(f"Error in AI key point extraction: {e}")
+                return []
+
     def _analyze_viral_moments(self, 
                              transcription: ViralTranscriptionResult,
                              podcast_name: str) -> List[ViralInsight]:
