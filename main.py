@@ -8,6 +8,7 @@ from typing import List, Dict, Any
 import argparse
 from datetime import datetime
 
+import os
 from src.config import Config
 from src.rss_parser import RSSFeedParser, PodcastEpisode
 from src.multi_transcriber import MultiTranscriber
@@ -73,10 +74,23 @@ class PodcastTweetsPipeline:
         }
         self.publisher = MultiAccountPublisher(accounts_config)
         
+        # Check for OpenRouter configuration
+        use_openrouter = os.getenv("USE_OPENROUTER", "").lower() == "true"
+        if use_openrouter:
+            api_key = os.getenv("OPENROUTER_API_KEY", config.openai_api_key)
+            base_url = "https://openrouter.ai/api/v1"
+            model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
+            logger.info("Using OpenRouter API for summary generation")
+        else:
+            api_key = config.openai_api_key
+            base_url = None
+            model = config.gpt_model
+        
         # Summary generator for 1000-word summaries (stored locally, NOT uploaded)
         self.summary_generator = PodcastSummaryGenerator(
-            openai_api_key=config.openai_api_key,
-            model=config.gpt_model,
+            openai_api_key=api_key,
+            model=model,
+            base_url=base_url,
             db_path="data/summaries.db"
         )
     

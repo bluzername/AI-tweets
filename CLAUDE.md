@@ -43,12 +43,21 @@ The system automatically generates comprehensive ~1000-word summaries for each p
 
 - **Storage**: Summaries are stored in a local SQLite database (`data/summaries.db`)
 - **NOT uploaded**: Summaries are for reference/archival only, NOT posted to X.com
+- **Uses OpenRouter API**: Set `USE_OPENROUTER=true` and `OPENROUTER_API_KEY` in `.env`
 - **Content includes**:
   - Comprehensive 800-1200 word summary covering the entire episode
   - 5-8 key topics discussed
   - 5-10 actionable takeaways
   - 3-5 notable quotes
   - List of speakers/guests mentioned
+
+### OpenRouter Configuration
+Add these to your `.env` file:
+```bash
+USE_OPENROUTER=true
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=anthropic/claude-3.5-sonnet  # or any supported model
+```
 
 ### CLI Commands for Summaries
 ```bash

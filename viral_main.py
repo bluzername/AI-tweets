@@ -235,12 +235,15 @@ class PodcastsTLDRPipeline:
         )
         
         # 6. Summary Generator (for local 1000-word summaries)
+        # Use OPENROUTER_MODEL env var for model selection when using OpenRouter
+        summary_model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet") if use_openrouter else "gpt-4"
         self.summary_generator = PodcastSummaryGenerator(
             openai_api_key=api_key,
-            model="gpt-4-turbo-preview" if use_openrouter else "gpt-4",
+            model=summary_model,
             base_url=openai_base_url,
             db_path="data/summaries.db"
         )
+        logger.info(f"Summary generator initialized with model: {summary_model}")
     
     def run_discovery(self) -> List[str]:
         """
