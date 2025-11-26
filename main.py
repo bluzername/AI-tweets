@@ -8,12 +8,14 @@ from typing import List, Dict, Any
 import argparse
 from datetime import datetime
 
+import os
 from src.config import Config
 from src.rss_parser import RSSFeedParser, PodcastEpisode
 from src.multi_transcriber import MultiTranscriber
 from src.ai_analyzer import AIAnalyzer
 from src.thread_generator import ThreadGenerator, ThreadStyle
 from src.x_publisher import MultiAccountPublisher
+from src.podcast_summary_generator import PodcastSummaryGenerator
 
 
 # Create logs directory if it doesn't exist
@@ -71,6 +73,26 @@ class PodcastTweetsPipeline:
             for name, acc in config.accounts.items()
         }
         self.publisher = MultiAccountPublisher(accounts_config)
+        
+        # Check for OpenRouter configuration
+        use_openrouter = os.getenv("USE_OPENROUTER", "").lower() == "true"
+        if use_openrouter:
+            api_key = os.getenv("OPENROUTER_API_KEY", config.openai_api_key)
+            base_url = "https://openrouter.ai/api/v1"
+            model = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
+            logger.info("Using OpenRouter API for summary generation")
+        else:
+            api_key = config.openai_api_key
+            base_url = None
+            model = config.gpt_model
+        
+        # Summary generator for 1000-word summaries (stored locally, NOT uploaded)
+        self.summary_generator = PodcastSummaryGenerator(
+            openai_api_key=api_key,
+            model=model,
+            base_url=base_url,
+            db_path="data/summaries.db"
+        )
     
     def run(self, episode_limit: int = None, specific_podcast: str = None):
         """
@@ -129,6 +151,9 @@ class PodcastTweetsPipeline:
             logger.info(f"⏭️  Skipping episode '{episode.title}' due to transcription failure")
             return
         
+        # Generate 1000-word summary (stored locally, NOT uploaded to X.com)
+        self._generate_summary(episode, transcription)
+        
         highlights = self._analyze_episode(episode, transcription)
         if not highlights:
             logger.warning(f"No highlights extracted for: {episode.title}")
@@ -149,6 +174,36 @@ class PodcastTweetsPipeline:
             youtube_urls=episode.youtube_urls or [],
             title=episode.title
         )
+    
+    def _generate_summary(self, episode: PodcastEpisode, transcription: Dict[str, Any]):
+        """Generate 1000-word summary (stored locally, NOT uploaded to X.com)."""
+        logger.info(f"Generating comprehensive summary for: {episode.title}")
+        
+        try:
+            # Create a unique episode ID from the episode data
+            import hashlib
+            episode_id = hashlib.md5(
+                f"{episode.podcast_name}:{episode.title}:{episode.published_date.isoformat()}".encode()
+            ).hexdigest()[:12]
+            
+            summary = self.summary_generator.generate_summary(
+                transcription_text=transcription.get("text", ""),
+                podcast_name=episode.podcast_name,
+                episode_title=episode.title,
+                episode_id=episode_id,
+                episode_number=episode.episode_number,
+                published_date=episode.published_date.isoformat() if episode.published_date else None,
+                transcription_method=transcription.get("method", "unknown")
+            )
+            
+            if summary:
+                logger.info(f"✅ Generated {summary.word_count}-word summary (stored locally)")
+            else:
+                logger.warning(f"⚠️ Summary generation failed for: {episode.title}")
+                
+        except Exception as e:
+            logger.error(f"Error generating summary: {e}")
+            # Don't fail the whole processing, just log and continue
     
     def _analyze_episode(self, episode: PodcastEpisode, transcription: Dict[str, Any]) -> List:
         """Analyze episode transcription for highlights."""
@@ -264,6 +319,18 @@ def main():
         help="Local Whisper model size (default: base)"
     )
     
+    # Summary-related arguments
+    parser.add_argument(
+        "--list-summaries",
+        action="store_true",
+        help="List all stored podcast summaries"
+    )
+    parser.add_argument(
+        "--summary-stats",
+        action="store_true",
+        help="Show summary database statistics"
+    )
+    
     args = parser.parse_args()
     
     Path("logs").mkdir(exist_ok=True)
@@ -279,6 +346,33 @@ def main():
         sys.exit(1)
     
     pipeline = PodcastTweetsPipeline(config, args.whisper_model)
+    
+    # Handle summary-specific commands
+    if args.list_summaries:
+        summaries = pipeline.summary_generator.list_summaries(limit=50)
+        if summaries:
+            print("\n📝 STORED PODCAST SUMMARIES")
+            print("=" * 80)
+            for i, s in enumerate(summaries, 1):
+                print(f"{i}. [{s.podcast_name}] {s.episode_title[:50]}... ({s.word_count} words)")
+            print(f"\nTotal: {len(summaries)} summaries in database")
+        else:
+            print("No summaries found in database.")
+        sys.exit(0)
+    
+    if args.summary_stats:
+        stats = pipeline.summary_generator.get_stats()
+        print("\n📊 SUMMARY DATABASE STATISTICS")
+        print("=" * 50)
+        print(f"Total Summaries: {stats.get('total_summaries', 0)}")
+        print(f"Average Word Count: {int(stats.get('average_word_count', 0))}")
+        print("\nSummaries by Podcast:")
+        for podcast, count in stats.get('by_podcast', {}).items():
+            print(f"  • {podcast}: {count}")
+        print("\nRecent Summaries:")
+        for recent in stats.get('recent_summaries', []):
+            print(f"  • {recent['title'][:40]}... ({recent['podcast']})")
+        sys.exit(0)
     
     try:
         pipeline.run(

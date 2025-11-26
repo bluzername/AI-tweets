@@ -38,8 +38,51 @@
   - Include thread openings with teaser options.
   - End threads with creator tags and calls to action.
 
+## Podcast Summaries Feature (Local Database)
+The system automatically generates comprehensive ~1000-word summaries for each podcast episode:
+
+- **Storage**: Summaries are stored in a local SQLite database (`data/summaries.db`)
+- **NOT uploaded**: Summaries are for reference/archival only, NOT posted to X.com
+- **Uses OpenRouter API**: Set `USE_OPENROUTER=true` and `OPENROUTER_API_KEY` in `.env`
+- **Content includes**:
+  - Comprehensive 800-1200 word summary covering the entire episode
+  - 5-8 key topics discussed
+  - 5-10 actionable takeaways
+  - 3-5 notable quotes
+  - List of speakers/guests mentioned
+
+### OpenRouter Configuration
+Add these to your `.env` file:
+```bash
+USE_OPENROUTER=true
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=anthropic/claude-3.5-sonnet  # or any supported model
+```
+
+### CLI Commands for Summaries
+```bash
+# List all stored summaries
+python viral_main.py --list-summaries
+
+# Filter summaries by podcast
+python viral_main.py --list-summaries --podcast-filter "Podcast Name"
+
+# View a specific summary (by episode ID)
+python viral_main.py --view-summary <episode_id>
+
+# Export summary to markdown
+python viral_main.py --export-summary <episode_id>
+
+# View summary mode
+python viral_main.py --mode summaries
+
+# For main.py pipeline
+python main.py --list-summaries
+python main.py --summary-stats
+```
+
 ## Bonus Ideas & Future Enhancements
-- Highlight scoring based on “tweet-ability” and engagement potential.
+- Highlight scoring based on "tweet-ability" and engagement potential.
 - Personality/tone switching per X.com account.
 - Incorporate user polls or questions in final tweets.
 - Dashboard for monitoring thread impact and engagement.
@@ -47,7 +90,7 @@
 
 ## Developer Workflow Tips
 - Use `/clear` often to keep context focused.
-- Provide detailed instructions upfront to maximize Claude’s success rate.
+- Provide detailed instructions upfront to maximize Claude's success rate.
 - Use multiple Claude instances or subagents for review and iteration.
 - Document all environment setup steps (including `.env` handling for OpenAI and X.com keys).
 - Write tests to cover fetching, transcription, GPT-5 prompt handling, posting, and fallback logic.
