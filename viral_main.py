@@ -34,6 +34,7 @@ from src.viral_insight_extractor import ViralContentAnalyzer, InsightDatabase
 from src.viral_tweet_crafter import ViralTweetCrafter
 from src.viral_scheduler import ViralScheduler, PostingStrategy
 from src.web_interface import create_app, create_templates
+from src.podcast_summary_generator import PodcastSummaryGenerator
 
 # Initialize Rich console
 console = Console()
@@ -232,6 +233,14 @@ class PodcastsTLDRPipeline:
             x_accounts=self.config["x_accounts"],
             posting_frequency=self.config["posting_frequency"]
         )
+        
+        # 6. Summary Generator (for local 1000-word summaries)
+        self.summary_generator = PodcastSummaryGenerator(
+            openai_api_key=api_key,
+            model="gpt-4-turbo-preview" if use_openrouter else "gpt-4",
+            base_url=openai_base_url,
+            db_path="data/summaries.db"
+        )
     
     def run_discovery(self) -> List[str]:
         """
@@ -344,6 +353,38 @@ class PodcastsTLDRPipeline:
 
                     overall_progress.remove_task(step_task)
                     console.print(f"[green]  ✓ Transcribed {len(transcription.segments)} segments[/green]")
+
+                    # Step 2.5: Generate comprehensive 1000-word summary (stored locally, NOT uploaded)
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Generating 1000-word summary",
+                        total=100
+                    )
+
+                    try:
+                        overall_progress.update(step_task, advance=20)
+                        summary = self.summary_generator.generate_summary(
+                            transcription_text=transcription.text,
+                            podcast_name=episode.podcast_name,
+                            episode_title=episode.title,
+                            episode_id=episode.episode_id,
+                            episode_number=episode.episode_number,
+                            published_date=episode.published_date.isoformat() if episode.published_date else None,
+                            transcription_method=transcription.method
+                        )
+                        overall_progress.update(step_task, advance=80)
+
+                        if summary:
+                            overall_progress.remove_task(step_task)
+                            console.print(f"[green]  ✓ Generated {summary.word_count}-word summary (stored locally)[/green]")
+                        else:
+                            overall_progress.remove_task(step_task)
+                            console.print(f"[yellow]  ⚠ Summary generation failed, continuing...[/yellow]")
+
+                    except Exception as summary_error:
+                        overall_progress.remove_task(step_task)
+                        console.print(f"[yellow]  ⚠ Summary error: {str(summary_error)[:40]}...[/yellow]")
+                        logger.warning(f"Summary generation failed: {summary_error}")
+                        # Don't fail the whole episode processing, just continue
 
                     # Step 3: Extract key educational points
                     step_task = overall_progress.add_task(
@@ -660,6 +701,7 @@ class PodcastsTLDRPipeline:
 
         episode_stats = self.ingestor.db.get_pending_episodes(1000)  # Get all for counting
         tweet_stats = self.scheduler.queue.get_queue_stats()
+        summary_stats = self.summary_generator.get_stats()
 
         stats = {
             "episodes": {
@@ -668,6 +710,7 @@ class PodcastsTLDRPipeline:
                 "completed": len([ep for ep in episode_stats if ep.processing_status == "completed"])
             },
             "tweets": tweet_stats,
+            "summaries": summary_stats,
             "performance": self.scheduler.get_performance_stats(),
             "last_updated": datetime.now().isoformat()
         }
@@ -699,20 +742,114 @@ class PodcastsTLDRPipeline:
             tweets_table.add_row(key.replace("_", " ").title(), str(value))
 
         console.print(tweets_table)
+
+        # Summaries table
+        summaries_table = Table(title="📝 Summaries (Local DB)", box=box.ROUNDED, show_header=True, header_style="bold yellow")
+        summaries_table.add_column("Metric", style="cyan")
+        summaries_table.add_column("Value", justify="right", style="white")
+
+        summaries_table.add_row("Total Summaries", str(summary_stats.get("total_summaries", 0)))
+        summaries_table.add_row("Avg Word Count", str(int(summary_stats.get("average_word_count", 0))))
+        
+        # Show summaries by podcast
+        by_podcast = summary_stats.get("by_podcast", {})
+        for podcast, count in list(by_podcast.items())[:5]:
+            summaries_table.add_row(f"  └ {podcast[:30]}", str(count))
+
+        console.print(summaries_table)
         console.print("═" * 60 + "\n")
 
         return stats
+    
+    def list_summaries(self, podcast_name: Optional[str] = None, limit: int = 20) -> List:
+        """List all stored summaries."""
+        summaries = self.summary_generator.list_summaries(podcast_name=podcast_name, limit=limit)
+        
+        if not summaries:
+            console.print("[yellow]No summaries found in database.[/yellow]")
+            return []
+        
+        table = Table(title="📝 Stored Podcast Summaries", box=box.ROUNDED, show_header=True, header_style="bold magenta")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Podcast", style="cyan", width=20)
+        table.add_column("Episode", style="white", width=40)
+        table.add_column("Words", justify="right", style="green", width=8)
+        table.add_column("Date", style="dim", width=12)
+        
+        for i, summary in enumerate(summaries, 1):
+            table.add_row(
+                str(i),
+                summary.podcast_name[:20],
+                summary.episode_title[:40] + "..." if len(summary.episode_title) > 40 else summary.episode_title,
+                str(summary.word_count),
+                summary.published_date[:10] if summary.published_date else "N/A"
+            )
+        
+        console.print(table)
+        return summaries
+    
+    def view_summary(self, episode_id: str):
+        """View a specific summary in detail."""
+        summary = self.summary_generator.get_summary(episode_id)
+        
+        if not summary:
+            console.print(f"[red]Summary not found for episode ID: {episode_id}[/red]")
+            return
+        
+        console.print("\n" + "═" * 70)
+        console.print(Panel(
+            f"[bold cyan]{summary.episode_title}[/bold cyan]\n"
+            f"[dim]{summary.podcast_name} | Episode {summary.episode_number or 'N/A'} | {summary.published_date[:10] if summary.published_date else 'N/A'}[/dim]",
+            border_style="cyan"
+        ))
+        
+        console.print(f"\n[bold white]📝 Summary ({summary.word_count} words):[/bold white]\n")
+        console.print(summary.summary)
+        
+        console.print(f"\n[bold white]🏷️ Key Topics:[/bold white]")
+        for topic in summary.key_topics:
+            console.print(f"  • {topic}")
+        
+        console.print(f"\n[bold white]💡 Key Takeaways:[/bold white]")
+        for i, takeaway in enumerate(summary.key_takeaways, 1):
+            console.print(f"  {i}. {takeaway}")
+        
+        console.print(f"\n[bold white]💬 Notable Quotes:[/bold white]")
+        for quote in summary.notable_quotes:
+            console.print(f'  > "{quote}"')
+        
+        console.print("\n" + "═" * 70)
+    
+    def export_summary(self, episode_id: str, output_path: Optional[str] = None):
+        """Export a summary to markdown file."""
+        if not output_path:
+            output_path = f"output/summary_{episode_id}.md"
+        
+        Path("output").mkdir(exist_ok=True)
+        
+        md_content = self.summary_generator.export_summary(episode_id, output_path)
+        
+        if md_content:
+            console.print(f"[green]✅ Summary exported to: {output_path}[/green]")
+        else:
+            console.print(f"[red]❌ Failed to export summary for: {episode_id}[/red]")
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Podcasts TLDR Viral Content Machine")
     parser.add_argument("--config", default="viral_config.json", help="Configuration file")
-    parser.add_argument("--mode", choices=["discovery", "processing", "scheduler", "web", "full"],
+    parser.add_argument("--mode", choices=["discovery", "processing", "scheduler", "web", "full", "summaries"],
                        default="full", help="Pipeline mode to run")
     parser.add_argument("--episode-limit", type=int, default=5, help="Max episodes to process")
     parser.add_argument("--web-port", type=int, default=5000, help="Web interface port")
     parser.add_argument("--stats", action="store_true", help="Show pipeline statistics")
+    
+    # Summary-specific arguments
+    parser.add_argument("--list-summaries", action="store_true", help="List all stored summaries")
+    parser.add_argument("--view-summary", type=str, help="View a specific summary by episode ID")
+    parser.add_argument("--export-summary", type=str, help="Export a summary to markdown by episode ID")
+    parser.add_argument("--podcast-filter", type=str, help="Filter summaries by podcast name")
 
     args = parser.parse_args()
 
@@ -723,6 +860,19 @@ def main():
         if args.stats:
             # Show statistics
             pipeline.get_stats()
+            return
+        
+        # Handle summary-specific commands
+        if args.list_summaries:
+            pipeline.list_summaries(podcast_name=args.podcast_filter)
+            return
+        
+        if args.view_summary:
+            pipeline.view_summary(args.view_summary)
+            return
+        
+        if args.export_summary:
+            pipeline.export_summary(args.export_summary)
             return
 
         # Run based on mode
@@ -747,6 +897,12 @@ def main():
         elif args.mode == "web":
             console.print(f"\n[bold cyan]🌐 Starting web interface on port {args.web_port}...[/bold cyan]")
             pipeline.run_web_interface(args.web_port)
+
+        elif args.mode == "summaries":
+            # Just list summaries
+            console.print("\n[bold cyan]📝 PODCAST SUMMARIES DATABASE[/bold cyan]")
+            console.print("─" * 60)
+            pipeline.list_summaries(podcast_name=args.podcast_filter, limit=50)
 
         elif args.mode == "full":
             pipeline.run_full_pipeline(episode_limit=args.episode_limit)
