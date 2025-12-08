@@ -34,6 +34,11 @@ from src.viral_insight_extractor import ViralContentAnalyzer, InsightDatabase
 from src.viral_tweet_crafter import ViralTweetCrafter
 from src.viral_scheduler import ViralScheduler, PostingStrategy
 from src.web_interface import create_app, create_templates
+from src.error_handling import (
+    ErrorAggregator, ErrorClassifier, ErrorCategory,
+    retry_with_backoff, safe_execute, try_or_default,
+    get_circuit_breaker, ResilientPipeline
+)
 
 # Initialize Rich console
 console = Console()
@@ -68,6 +73,10 @@ class PodcastsTLDRPipeline:
         # Show beautiful ASCII art header
         self._show_header()
 
+        # Initialize error tracking
+        self.error_aggregator = ErrorAggregator()
+        self.checkpoint_file = "data/pipeline_checkpoint.json"
+
         with console.status("[bold cyan]Initializing pipeline...", spinner="dots"):
             self.config = self._load_config(config_file)
 
@@ -77,8 +86,8 @@ class PodcastsTLDRPipeline:
             Path("cache").mkdir(exist_ok=True)
             Path("output").mkdir(exist_ok=True)
 
-            # Initialize components
-            self._init_components()
+            # Initialize components with error recovery
+            self._init_components_safe()
 
         console.print("✅ [bold green]Podcasts TLDR Pipeline initialized successfully![/bold green]")
 
@@ -157,8 +166,8 @@ class PodcastsTLDRPipeline:
         except FileNotFoundError:
             logger.warning(f"Config file {config_file} not found, using defaults")
             # Create default config file
-            with open(config_file, 'w') as f:
-                json.dump(default_config, f, indent=2)
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(default_config, f, indent=2, ensure_ascii=False)
 
         # Load Twitter credentials from environment if not in config
         if default_config.get("x_accounts", {}).get("podcasts_tldr", {}).get("consumer_key") == "":
@@ -173,6 +182,23 @@ class PodcastsTLDRPipeline:
 
         return default_config
     
+    def _init_components_safe(self):
+        """Initialize all pipeline components with error recovery."""
+        try:
+            self._init_components()
+        except ValueError as e:
+            # API key missing - provide helpful guidance
+            console.print(f"\n[bold red]Configuration Error:[/bold red] {e}")
+            console.print("\n[yellow]To fix this, set one of these environment variables:[/yellow]")
+            console.print("  • OPENAI_API_KEY=your_openai_key")
+            console.print("  • OPENROUTER_API_KEY=your_openrouter_key (with USE_OPENROUTER=true)")
+            console.print("\n[dim]You can add these to your .env file[/dim]")
+            raise SystemExit(1)
+        except Exception as e:
+            console.print(f"\n[bold red]Failed to initialize pipeline:[/bold red] {e}")
+            logger.error(f"Pipeline initialization failed: {e}", exc_info=True)
+            raise SystemExit(1)
+
     def _init_components(self):
         """Initialize all pipeline components."""
         
@@ -271,9 +297,22 @@ class PodcastsTLDRPipeline:
         """
         Run complete processing pipeline for pending episodes.
         Steps 2-4: Transcribe → Extract insights → Craft tweets.
+        
+        Features:
+        - Checkpoint support for resuming after crashes
+        - Per-episode error isolation (one failure doesn't stop others)
+        - Error aggregation and reporting
+        - Graceful degradation
         """
         console.print("\n[bold cyan]⚡ STEP 2-4: Episode Processing Pipeline[/bold cyan]")
         console.print("─" * 60)
+
+        # Load checkpoint for resume support
+        checkpoint = self._load_checkpoint()
+        completed_episodes = set(checkpoint.get("completed_episodes", []))
+        
+        if completed_episodes:
+            console.print(f"[dim]  Resuming from checkpoint ({len(completed_episodes)} episodes already done)[/dim]")
 
         # Get episodes for processing
         with console.status("[bold yellow]Loading pending episodes...", spinner="dots"):
@@ -283,10 +322,26 @@ class PodcastsTLDRPipeline:
             console.print("[yellow]ℹ️  No episodes pending processing[/yellow]")
             return {"processed": 0, "tweets_created": 0}
 
-        console.print(f"[bold white]Processing {len(pending_episodes)} episode(s)...[/bold white]\n")
+        # Filter out already-completed episodes (from checkpoint)
+        episodes_to_process = [
+            ep for ep in pending_episodes 
+            if ep.episode_id not in completed_episodes
+        ]
+        
+        if len(episodes_to_process) < len(pending_episodes):
+            skipped = len(pending_episodes) - len(episodes_to_process)
+            console.print(f"[dim]  Skipping {skipped} already-processed episode(s)[/dim]")
+
+        if not episodes_to_process:
+            console.print("[yellow]ℹ️  All pending episodes already processed[/yellow]")
+            return {"processed": 0, "tweets_created": 0, "skipped": len(pending_episodes)}
+
+        console.print(f"[bold white]Processing {len(episodes_to_process)} episode(s)...[/bold white]\n")
 
         total_tweets = 0
         processed_count = 0
+        failed_count = 0
+        episode_errors: Dict[str, str] = {}
 
         # Create overall progress bar
         with Progress(
@@ -300,10 +355,10 @@ class PodcastsTLDRPipeline:
 
             episodes_task = overall_progress.add_task(
                 "[cyan]Processing episodes",
-                total=len(pending_episodes)
+                total=len(episodes_to_process)
             )
 
-            for episode in pending_episodes:
+            for episode in episodes_to_process:
                 try:
                     # Display current episode
                     console.print(f"\n[bold white]🎙️  {episode.podcast_name}[/bold white]")
@@ -373,49 +428,39 @@ class PodcastsTLDRPipeline:
                     # Save insights to database
                     self.insight_db.save_insights(key_points, episode.episode_id)
 
-                    # Step 3.5: Download thumbnail if YouTube URL available
+                    # Step 3.5: Download thumbnail using multi-source fetcher
                     thumbnail_path = None
-                    if episode.youtube_urls and len(episode.youtube_urls) > 0:
-                        step_task = overall_progress.add_task(
-                            f"[yellow]  → Downloading thumbnail",
-                            total=100
-                        )
+                    step_task = overall_progress.add_task(
+                        f"[yellow]  → Fetching thumbnail",
+                        total=100
+                    )
 
+                    try:
+                        from src.thumbnail_fetcher import ThumbnailFetcher
+
+                        # Use shared thumbnail fetcher (created once)
+                        if not hasattr(self, '_thumbnail_fetcher'):
+                            self._thumbnail_fetcher = ThumbnailFetcher()
+
+                        thumbnail_path = self._thumbnail_fetcher.get_thumbnail(episode)
+                        overall_progress.update(step_task, advance=100)
+
+                        if thumbnail_path:
+                            console.print(f"[green]  ✓ Thumbnail acquired[/green]")
+                            # Update database with thumbnail path
+                            self.ingestor.db.update_thumbnail_path(episode.episode_id, thumbnail_path)
+                        else:
+                            console.print(f"[yellow]  ⚠ No thumbnail available[/yellow]")
+
+                    except Exception as e:
+                        console.print(f"[yellow]  ⚠ Thumbnail error: {str(e)[:40]}...[/yellow]")
+                        logger.warning(f"Thumbnail fetch failed: {e}")
+                    finally:
+                        # Always remove the task, whether success or failure
                         try:
-                            from src.media_manager import MediaManager
-                            from src.youtube_transcriber import YouTubeTranscriber
-
-                            media_manager = MediaManager()
-                            yt_transcriber = YouTubeTranscriber()
-
-                            # Extract video ID from first YouTube URL
-                            video_id = yt_transcriber.extract_video_id(episode.youtube_urls[0])
-
-                            if video_id:
-                                # Get thumbnail URL
-                                thumbnail_url = yt_transcriber.get_thumbnail_url(video_id)
-
-                                # Download and cache
-                                thumbnail_path = media_manager.download_and_cache_image(
-                                    url=thumbnail_url,
-                                    identifier=video_id
-                                )
-
-                                if thumbnail_path:
-                                    overall_progress.update(step_task, advance=100)
-                                    overall_progress.remove_task(step_task)
-                                    console.print(f"[green]  ✓ Downloaded thumbnail[/green]")
-                                else:
-                                    overall_progress.remove_task(step_task)
-                                    console.print(f"[yellow]  ⚠ Thumbnail download failed[/yellow]")
-                            else:
-                                overall_progress.remove_task(step_task)
-                                console.print(f"[yellow]  ⚠ Could not extract video ID[/yellow]")
-
-                        except Exception as e:
                             overall_progress.remove_task(step_task)
-                            console.print(f"[yellow]  ⚠ Thumbnail error: {str(e)[:40]}...[/yellow]")
-                            logger.warning(f"Thumbnail download failed: {e}")
+                        except KeyError:
+                            pass  # Task already removed
 
                     # Step 4: Get Twitter handles for episode
                     step_task = overall_progress.add_task(
@@ -434,8 +479,12 @@ class PodcastsTLDRPipeline:
                     overall_progress.update(step_task, advance=100)
 
                     overall_progress.remove_task(step_task)
-                    handles_found = [podcast_handle] + (host_handles or []) + (guest_handles or [])
-                    console.print(f"[green]  ✓ Found {len(handles_found)} handle(s): {', '.join(handles_found[:3])}...[/green]")
+                    # Filter out None values before joining
+                    handles_found = [h for h in ([podcast_handle] + (host_handles or []) + (guest_handles or [])) if h is not None]
+                    if handles_found:
+                        console.print(f"[green]  ✓ Found {len(handles_found)} handle(s): {', '.join(handles_found[:3])}...[/green]")
+                    else:
+                        console.print("[yellow]  ℹ No Twitter handles found for this podcast[/yellow]")
 
                     # Step 5: Create ONE educational thread per episode (6 tweets)
                     step_task = overall_progress.add_task(
@@ -473,8 +522,11 @@ class PodcastsTLDRPipeline:
 
                     from src.content_validator import ContentValidator
                     validator = ContentValidator()
-                    is_valid, errors = validator.validate_thread(thread)
+                    is_valid, errors, cleaned_thread = validator.validate_thread(thread)
                     overall_progress.update(step_task, advance=100)
+
+                    # Use cleaned thread (filler words auto-stripped)
+                    thread = cleaned_thread
 
                     if not is_valid:
                         overall_progress.remove_task(step_task)
@@ -488,43 +540,29 @@ class PodcastsTLDRPipeline:
                     overall_progress.remove_task(step_task)
                     console.print(f"[green]  ✓ Thread validated successfully[/green]")
 
-                    # Step 7: Schedule the thread
+                    # Step 7: Schedule the thread using new thread-based storage
                     step_task = overall_progress.add_task(
                         f"[yellow]  → Scheduling thread",
                         total=100
                     )
 
                     for account_name in self.config["x_accounts"].keys():
-                        strategy = PostingStrategy(self.config["posting_strategy"])
-
-                        # Convert thread to tweet objects
-                        from src.viral_tweet_crafter import ViralTweet
-                        thread_tweets = []
-                        for i, tweet in enumerate(thread):
-                            # Attach thumbnail to first tweet only
-                            has_media = (i == 0 and thumbnail_path is not None)
-                            tweet_obj = ViralTweet(
-                                content=tweet,
-                                format="thread",
-                                has_media=has_media,
-                                media_url=thumbnail_path if has_media else None,
-                                metadata={
-                                    "thread_position": i + 1,
-                                    "thread_total": 6,
-                                    "episode_id": episode.episode_id
-                                }
-                            )
-                            thread_tweets.append(tweet_obj)
-
-                        scheduled_ids = self.scheduler.schedule_tweets(
-                            tweets=thread_tweets,
+                        # Use new thread scheduling method for proper thread posting
+                        thread_id = self.scheduler.schedule_thread(
+                            thread_tweets=thread,  # List of 6 tweet strings
                             account_name=account_name,
-                            episode_id=episode.episode_id,
                             podcast_name=episode.podcast_name,
-                            strategy=strategy
+                            podcast_handle=podcast_handle,
+                            host_handles=host_handles,
+                            guest_handles=guest_handles,
+                            episode_id=episode.episode_id,
+                            episode_title=episode.title,
+                            thumbnail_path=thumbnail_path,
+                            scheduled_time=None  # Will use default (1 hour from now)
                         )
 
-                        total_tweets += len(scheduled_ids)
+                        if thread_id:
+                            total_tweets += 6  # Count all 6 tweets in thread
 
                     overall_progress.update(step_task, advance=100)
                     overall_progress.remove_task(step_task)
@@ -540,28 +578,114 @@ class PodcastsTLDRPipeline:
                     processed_count += 1
                     console.print(f"\n[bold green]✅ Episode completed successfully![/bold green]")
 
+                    # Save checkpoint after each successful episode
+                    self._save_checkpoint_episode(episode.episode_id)
+
                     # Update overall progress
                     overall_progress.update(episodes_task, advance=1)
 
                 except Exception as e:
-                    console.print(f"\n[bold red]❌ Error processing episode: {str(e)[:80]}...[/bold red]")
-                    logger.error(f"Error processing {episode.title}: {e}", exc_info=True)
-                    self.ingestor.mark_episode_failed(episode.episode_id, str(e))
+                    failed_count += 1
+                    error_msg = str(e)[:200]
+                    episode_errors[episode.episode_id] = error_msg
+                    
+                    # Classify the error to decide how to handle it
+                    error_category = ErrorClassifier.classify(e)
+                    
+                    if error_category == ErrorCategory.RESOURCE:
+                        # Resource error - pause and retry later
+                        console.print(f"\n[bold yellow]⚠️ Resource issue detected, pausing...[/bold yellow]")
+                        console.print(f"[dim]  Error: {error_msg}[/dim]")
+                        logger.warning(f"Resource error processing {episode.title}: {e}")
+                        time.sleep(30)  # Wait before continuing
+                    elif error_category == ErrorCategory.TRANSIENT:
+                        # Transient error - log but continue
+                        console.print(f"\n[yellow]⚠️ Temporary error, skipping episode: {error_msg[:60]}...[/yellow]")
+                        logger.warning(f"Transient error processing {episode.title}: {e}")
+                    else:
+                        # Permanent or unknown error
+                        console.print(f"\n[bold red]❌ Error processing episode: {error_msg[:80]}...[/bold red]")
+                        logger.error(f"Error processing {episode.title}: {e}", exc_info=True)
+                    
+                    # Record error in aggregator
+                    self.error_aggregator.record(e, context={
+                        "episode_id": episode.episode_id,
+                        "episode_title": episode.title,
+                        "podcast_name": episode.podcast_name
+                    })
+                    
+                    self.ingestor.mark_episode_failed(episode.episode_id, error_msg)
                     overall_progress.update(episodes_task, advance=1)
                     continue
 
-        # Summary
+        # Summary with error reporting
         console.print("\n" + "─" * 60)
         console.print(f"[bold green]🎯 Processing Complete![/bold green]")
         console.print(f"[white]   • Episodes processed: {processed_count}[/white]")
-        console.print(f"[white]   • Tweets scheduled: {total_tweets}[/white]\n")
+        console.print(f"[white]   • Tweets scheduled: {total_tweets}[/white]")
+        
+        if failed_count > 0:
+            console.print(f"[yellow]   • Episodes failed: {failed_count}[/yellow]")
+            
+            # Show error summary
+            error_summary = self.error_aggregator.get_summary()
+            if error_summary.get("by_category"):
+                console.print(f"[dim]   • Error breakdown: {error_summary['by_category']}[/dim]")
+        
+        console.print()
+
+        # Clear checkpoint on successful completion
+        if failed_count == 0:
+            self._clear_checkpoint()
 
         return {
             "processed": processed_count,
             "tweets_created": total_tweets,
-            "episodes": [ep.episode_id for ep in pending_episodes[:processed_count]]
+            "failed": failed_count,
+            "errors": episode_errors,
+            "episodes": [ep.episode_id for ep in episodes_to_process[:processed_count]]
         }
     
+    def _load_checkpoint(self) -> Dict[str, Any]:
+        """Load checkpoint for resume support."""
+        try:
+            checkpoint_path = Path(self.checkpoint_file)
+            if checkpoint_path.exists():
+                with open(checkpoint_path, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint: {e}")
+        return {}
+
+    def _save_checkpoint_episode(self, episode_id: str):
+        """Save checkpoint after processing an episode."""
+        try:
+            checkpoint = self._load_checkpoint()
+            if "completed_episodes" not in checkpoint:
+                checkpoint["completed_episodes"] = []
+            
+            if episode_id not in checkpoint["completed_episodes"]:
+                checkpoint["completed_episodes"].append(episode_id)
+            
+            checkpoint["last_update"] = datetime.now().isoformat()
+            
+            checkpoint_path = Path(self.checkpoint_file)
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            logger.warning(f"Failed to save checkpoint: {e}")
+
+    def _clear_checkpoint(self):
+        """Clear checkpoint after successful completion."""
+        try:
+            checkpoint_path = Path(self.checkpoint_file)
+            if checkpoint_path.exists():
+                checkpoint_path.unlink()
+                logger.info("Cleared pipeline checkpoint")
+        except Exception as e:
+            logger.warning(f"Failed to clear checkpoint: {e}")
+
     def run_scheduler(self):
         """
         Start the automated scheduler.
@@ -605,6 +729,25 @@ class PodcastsTLDRPipeline:
         if discovery:
             new_episode_ids = self.run_discovery()
             results["discovery"]["new_episodes"] = len(new_episode_ids)
+
+        # Step 1.5: Auto-backfill missing thumbnails
+        try:
+            from src.thumbnail_fetcher import backfill_thumbnails, ThumbnailFetcher
+            console.print("\n[bold cyan]📷 Backfilling Missing Thumbnails[/bold cyan]")
+
+            if not hasattr(self, '_thumbnail_fetcher'):
+                self._thumbnail_fetcher = ThumbnailFetcher()
+
+            backfill_result = backfill_thumbnails(
+                db=self.ingestor.db,
+                fetcher=self._thumbnail_fetcher,
+                limit=20,
+                delay=0.5
+            )
+            results["thumbnails"] = backfill_result
+        except Exception as e:
+            logger.warning(f"Thumbnail backfill failed: {e}")
+            results["thumbnails"] = {"error": str(e)}
 
         # Step 2-4: Processing
         if processing:
