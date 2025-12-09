@@ -207,7 +207,14 @@ class PodcastsTLDRPipeline:
             feed_urls=self.config["podcast_feeds"],
             max_episodes_per_feed=20
         )
-        
+
+        # Backfill missing episode numbers from titles and RSS feeds
+        backfilled = self.ingestor.db.backfill_episode_numbers(
+            feed_urls=self.config["podcast_feeds"]
+        )
+        if backfilled > 0:
+            logger.info(f"Backfilled episode numbers for {backfilled} existing episodes")
+
         # Configure OpenAI client to use OpenRouter if enabled
         use_openrouter = os.getenv("USE_OPENROUTER", "").lower() == "true"
 

@@ -64,8 +64,17 @@ class PodcastEpisode:
         # Convert lists to JSON strings
         if self.youtube_urls:
             data['youtube_urls'] = ','.join(self.youtube_urls)
+        else:
+            data['youtube_urls'] = None
         if self.guest_names:
             data['guest_names'] = ','.join(self.guest_names)
+        else:
+            data['guest_names'] = None
+        # Ensure thumbnail fields exist
+        if 'thumbnail_url' not in data:
+            data['thumbnail_url'] = None
+        if 'thumbnail_local_path' not in data:
+            data['thumbnail_local_path'] = None
         return data
 
 
@@ -146,14 +155,20 @@ class EpisodeDatabase:
                 # Convert engagement_metrics dict to JSON string if present
                 if data.get('engagement_metrics'):
                     import json
-                    data['engagement_metrics'] = json.dumps(data['engagement_metrics'])
+                    data['engagement_metrics'] = json.dumps(data['engagement_metrics'], ensure_ascii=False)
                 
-                # Insert or update
+                # Insert or update - all 23 columns explicitly listed
                 conn.execute("""
                     INSERT OR REPLACE INTO episodes
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    (episode_id, title, podcast_name, audio_url, published_date, description,
+                     episode_number, duration, file_size, youtube_urls, viral_score, processing_status,
+                     transcription_method, content_extracted, tweets_generated, engagement_metrics,
+                     error_message, created_at, updated_at, insights_count, tweets_generated_count,
+                     thumbnail_url, thumbnail_local_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             COALESCE((SELECT created_at FROM episodes WHERE episode_id = ?), CURRENT_TIMESTAMP),
-                            CURRENT_TIMESTAMP)
+                            CURRENT_TIMESTAMP,
+                            ?, ?, ?, ?)
                 """, (
                     data['episode_id'], data['title'], data['podcast_name'],
                     data['audio_url'], data['published_date'], data['description'],
@@ -161,10 +176,12 @@ class EpisodeDatabase:
                     data['youtube_urls'], data['viral_score'], data['processing_status'],
                     data['transcription_method'], data['content_extracted'],
                     data['tweets_generated'], data['engagement_metrics'],
-                    data.get('error_message'),  # Add error_message field
-                    data.get('thumbnail_url'),  # Add thumbnail_url field
-                    data.get('thumbnail_local_path'),  # Add thumbnail_local_path field
-                    data['episode_id']  # For the COALESCE query
+                    data.get('error_message'),
+                    data['episode_id'],  # For the COALESCE query (created_at)
+                    0,  # insights_count
+                    0,  # tweets_generated_count
+                    data.get('thumbnail_url'),
+                    data.get('thumbnail_local_path')
                 ))
                 
                 logger.debug(f"Saved episode: {episode.episode_id}")
@@ -218,15 +235,165 @@ class EpisodeDatabase:
         """Update episode processing status and metadata."""
         updates = {"processing_status": status}
         updates.update(kwargs)
-        
+
         set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
         set_clause += ", updated_at = CURRENT_TIMESTAMP"
-        
+
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 f"UPDATE episodes SET {set_clause} WHERE episode_id = ?",
                 (*updates.values(), episode_id)
             )
+
+    def get_episodes_without_thumbnails(self, limit: int = 20) -> List[PodcastEpisode]:
+        """
+        Get episodes that don't have thumbnails yet.
+
+        Args:
+            limit: Maximum number of episodes to return
+
+        Returns:
+            List of PodcastEpisode objects needing thumbnails
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT * FROM episodes
+                WHERE thumbnail_local_path IS NULL
+                ORDER BY published_date DESC
+                LIMIT ?
+            """, (limit,))
+
+            episodes = []
+            for row in cursor.fetchall():
+                episode_data = dict(row)
+
+                # Remove database-specific fields
+                db_fields = ['created_at', 'updated_at', 'error_message', 'insights_count', 'tweets_generated_count']
+                for field in db_fields:
+                    episode_data.pop(field, None)
+
+                # Convert ISO string back to datetime
+                episode_data['published_date'] = datetime.fromisoformat(episode_data['published_date'])
+
+                # Convert YouTube URLs string back to list
+                if episode_data.get('youtube_urls'):
+                    episode_data['youtube_urls'] = episode_data['youtube_urls'].split(',')
+                else:
+                    episode_data['youtube_urls'] = None
+
+                # Convert engagement metrics back to dict
+                if episode_data.get('engagement_metrics'):
+                    import json
+                    episode_data['engagement_metrics'] = json.loads(episode_data['engagement_metrics'])
+                else:
+                    episode_data['engagement_metrics'] = None
+
+                episodes.append(PodcastEpisode(**episode_data))
+
+            return episodes
+
+    def update_thumbnail_path(self, episode_id: str, thumbnail_path: str):
+        """
+        Update the thumbnail local path for an episode.
+
+        Args:
+            episode_id: Episode ID
+            thumbnail_path: Local path to the cached thumbnail
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """UPDATE episodes
+                   SET thumbnail_local_path = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE episode_id = ?""",
+                (thumbnail_path, episode_id)
+            )
+
+    def backfill_episode_numbers(self, feed_urls: List[str] = None) -> int:
+        """
+        Backfill episode numbers for existing episodes that have NULL episode_number.
+        First tries to extract from titles using regex patterns.
+        If feed_urls provided, also tries to match with RSS itunes_episode metadata.
+
+        Args:
+            feed_urls: Optional list of RSS feed URLs to fetch itunes_episode from
+
+        Returns:
+            Number of episodes updated
+        """
+        import re
+
+        patterns = [
+            r'Episode\s+(\d+)',
+            r'Ep\.?\s+(\d+)',
+            r'#(\d+)',
+            r'^(\d+)\s*[-–:.]',  # Numbers at start like "123 - Title" or "123: Title"
+        ]
+
+        updated_count = 0
+        episodes_to_update = []
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                """SELECT episode_id, title FROM episodes
+                   WHERE episode_number IS NULL OR episode_number = ''"""
+            )
+
+            missing_episodes = list(cursor)
+
+            # Step 1: Try to extract from titles
+            title_matches = {}
+            for row in missing_episodes:
+                episode_id = row['episode_id']
+                title = row['title']
+
+                for pattern in patterns:
+                    match = re.search(pattern, title, re.IGNORECASE)
+                    if match:
+                        title_matches[episode_id] = match.group(1)
+                        break
+
+            # Step 2: Try to fetch from RSS feeds if provided
+            rss_matches = {}
+            if feed_urls:
+                import feedparser
+                for feed_url in feed_urls:
+                    try:
+                        feed = feedparser.parse(feed_url)
+                        for entry in feed.entries:
+                            title = entry.get('title', '').strip()
+                            itunes_ep = getattr(entry, 'itunes_episode', None)
+
+                            if itunes_ep:
+                                # Try to match by title
+                                for row in missing_episodes:
+                                    db_title = row['title']
+                                    if db_title == title or title in db_title or db_title in title:
+                                        rss_matches[row['episode_id']] = str(itunes_ep)
+                                        break
+                    except Exception as e:
+                        logger.warning(f"Error fetching RSS feed {feed_url}: {e}")
+
+            # Combine matches (title takes precedence)
+            for row in missing_episodes:
+                episode_id = row['episode_id']
+                episode_number = title_matches.get(episode_id) or rss_matches.get(episode_id)
+                if episode_number:
+                    episodes_to_update.append((episode_number, episode_id))
+
+            # Batch update
+            if episodes_to_update:
+                conn.executemany(
+                    """UPDATE episodes
+                       SET episode_number = ?, updated_at = CURRENT_TIMESTAMP
+                       WHERE episode_id = ?""",
+                    episodes_to_update
+                )
+                updated_count = len(episodes_to_update)
+                logger.info(f"Backfilled episode numbers for {updated_count} episodes")
+
+        return updated_count
 
 
 class ViralContentAnalyzer:
@@ -348,7 +515,7 @@ class PodcastIngestor:
             episodes = []
             
             for entry in feed.entries[:self.max_episodes_per_feed]:
-                episode = self._parse_entry(entry, podcast_name)
+                episode = self._parse_entry(entry, podcast_name, feed)
                 if episode:
                     episodes.append(episode)
             
@@ -358,7 +525,7 @@ class PodcastIngestor:
             logger.error(f"Error parsing feed {feed_url}: {e}")
             return []
     
-    def _parse_entry(self, entry, podcast_name: str) -> Optional[PodcastEpisode]:
+    def _parse_entry(self, entry, podcast_name: str, feed=None) -> Optional[PodcastEpisode]:
         """Parse a single RSS entry into a PodcastEpisode."""
         try:
             # Find audio URL
@@ -366,13 +533,13 @@ class PodcastIngestor:
             if not audio_url:
                 logger.debug(f"No audio URL found for: {entry.get('title', 'Unknown')}")
                 return None
-            
+
             # Parse publish date
             published_date = self._parse_publish_date(entry)
             if not published_date:
                 logger.debug(f"No valid publish date for: {entry.get('title', 'Unknown')}")
                 return None
-            
+
             # Extract YouTube URLs from description
             youtube_urls = self._extract_youtube_urls(entry.get('description', ''))
 
@@ -383,6 +550,9 @@ class PodcastIngestor:
             title = entry.get('title', 'Unknown Title').strip()
             guest_names = self._extract_guest_names(title)
 
+            # Extract thumbnail URL
+            thumbnail_url = self._extract_thumbnail_url(entry, feed)
+
             episode = PodcastEpisode(
                 title=title,
                 podcast_name=podcast_name.strip(),
@@ -392,9 +562,10 @@ class PodcastIngestor:
                 episode_number=self._extract_episode_number(entry),
                 duration=duration,
                 youtube_urls=youtube_urls if youtube_urls else None,
-                guest_names=guest_names if guest_names else None
+                guest_names=guest_names if guest_names else None,
+                thumbnail_url=thumbnail_url
             )
-            
+
             return episode
             
         except Exception as e:
@@ -497,6 +668,81 @@ class PodcastIngestor:
             match = re.search(pattern, title, re.IGNORECASE)
             if match:
                 return match.group(1)
+
+        return None
+
+    def _extract_thumbnail_url(self, entry, feed=None) -> Optional[str]:
+        """
+        Extract thumbnail URL from RSS entry or feed.
+
+        Priority order:
+        1. Episode-specific image (itunes:image on entry)
+        2. media:content or media:thumbnail
+        3. Podcast channel image (fallback)
+
+        Args:
+            entry: RSS entry object
+            feed: Full feed object (for channel image fallback)
+
+        Returns:
+            Thumbnail URL or None
+        """
+        # 1. Episode-specific itunes:image
+        if hasattr(entry, 'image') and entry.image:
+            if isinstance(entry.image, dict):
+                href = entry.image.get('href')
+                if href:
+                    return href
+            elif isinstance(entry.image, str):
+                return entry.image
+
+        # 2. itunes_image attribute
+        if hasattr(entry, 'itunes_image'):
+            img = entry.itunes_image
+            if isinstance(img, dict):
+                href = img.get('href')
+                if href:
+                    return href
+            elif isinstance(img, str):
+                return img
+
+        # 3. media:content (look for image type)
+        if hasattr(entry, 'media_content'):
+            for media in entry.media_content:
+                medium = media.get('medium', '')
+                mime_type = media.get('type', '')
+                if medium == 'image' or mime_type.startswith('image'):
+                    url = media.get('url')
+                    if url:
+                        return url
+
+        # 4. media:thumbnail
+        if hasattr(entry, 'media_thumbnail'):
+            for thumb in entry.media_thumbnail:
+                url = thumb.get('url')
+                if url:
+                    return url
+
+        # 5. Fallback: podcast channel image
+        if feed and hasattr(feed, 'feed'):
+            channel = feed.feed
+
+            # Channel image
+            if hasattr(channel, 'image') and channel.image:
+                if isinstance(channel.image, dict):
+                    href = channel.image.get('href')
+                    if href:
+                        return href
+
+            # Channel itunes:image
+            if hasattr(channel, 'itunes_image'):
+                img = channel.itunes_image
+                if isinstance(img, dict):
+                    href = img.get('href')
+                    if href:
+                        return href
+                elif isinstance(img, str):
+                    return img
 
         return None
 
