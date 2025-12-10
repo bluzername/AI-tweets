@@ -14,8 +14,9 @@ services:
 
     # Additional environment overrides
     environment:
-      - DISCOVERY_INTERVAL=${DISCOVERY_INTERVAL:-3600}
+      - DISCOVERY_INTERVAL=${DISCOVERY_INTERVAL:-14400}
       - PROCESSING_INTERVAL=${PROCESSING_INTERVAL:-1800}
+      - SCHEDULER_CHECK_INTERVAL=${SCHEDULER_CHECK_INTERVAL:-300}
       - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-300}
       - MAX_EPISODES_PER_CYCLE=${MAX_EPISODES_PER_CYCLE:-5}
       - MAX_API_COST_PER_DAY=${MAX_API_COST_PER_DAY:-50.0}
@@ -55,23 +56,23 @@ services:
       retries: 3
       start_period: 30s
 
-  # Optional: Web dashboard (when implemented)
-  # web-dashboard:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: podcasts-tldr-web
-  #   restart: unless-stopped
-  #   command: ["python", "viral_main.py", "--mode", "web", "--web-port", "5000"]
-  #   ports:
-  #     - "5000:5000"
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - ./data:/app/data:ro
-  #     - ./logs:/app/logs:ro
-  #   depends_on:
-  #     - podcasts-tldr
+  # Web dashboard for monitoring
+  web-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: podcasts-tldr-web
+    restart: unless-stopped
+    command: ["python", "src/web_dashboard.py", "--port", "5000"]
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data:ro
+      - ./logs:/app/logs:ro
+    depends_on:
+      - podcasts-tldr
 
 # Networks
 networks:

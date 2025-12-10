@@ -4,6 +4,7 @@ Manages tweet scheduling, publishing, and provides web interface for content man
 """
 
 import logging
+import os
 import sqlite3
 import json
 from datetime import datetime, timedelta
@@ -14,6 +15,9 @@ from pathlib import Path
 import schedule
 import time
 import threading
+
+# Scheduler check interval (default: 300 seconds = 5 minutes)
+SCHEDULER_CHECK_INTERVAL = int(os.environ.get("SCHEDULER_CHECK_INTERVAL", "300"))
 
 from .viral_tweet_crafter import ViralTweet, TweetFormat
 
@@ -173,15 +177,220 @@ class OptimalTimingAnalyzer:
         pass
 
 
+class ThreadQueue:
+    """Manages the queue of threads to be posted (new thread-based storage)."""
+
+    def __init__(self, db_path: str = "data/thread_queue.db"):
+        """Initialize thread queue database."""
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(exist_ok=True)
+        self._init_database()
+
+    def _init_database(self):
+        """Create thread queue table."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS thread_queue (
+                    thread_id TEXT PRIMARY KEY,
+                    account_name TEXT NOT NULL,
+                    podcast_name TEXT,
+                    podcast_handle TEXT,
+                    host_handles TEXT,
+                    guest_handles TEXT,
+                    episode_id TEXT,
+                    episode_title TEXT,
+                    tweets_json TEXT NOT NULL,
+                    thumbnail_path TEXT,
+                    scheduled_time TEXT NOT NULL,
+                    status TEXT DEFAULT 'scheduled',
+                    posted_time TEXT,
+                    first_tweet_id TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Create indexes
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_thread_account_status ON thread_queue (account_name, status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_thread_scheduled_time ON thread_queue (scheduled_time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_thread_episode_id ON thread_queue (episode_id)")
+
+    def add_thread(self,
+                   thread_tweets: List[str],
+                   account_name: str,
+                   podcast_name: str = None,
+                   podcast_handle: str = None,
+                   host_handles: List[str] = None,
+                   guest_handles: List[str] = None,
+                   episode_id: str = None,
+                   episode_title: str = None,
+                   thumbnail_path: str = None,
+                   scheduled_time: datetime = None) -> Optional[str]:
+        """
+        Add a complete thread to the queue.
+
+        Args:
+            thread_tweets: List of tweet strings in order (6 tweets typically)
+            account_name: X.com account to post from
+            podcast_name: Name of the podcast
+            podcast_handle: @handle of the podcast
+            host_handles: List of host @handles
+            guest_handles: List of guest @handles
+            episode_id: Source episode ID
+            episode_title: Title of the episode
+            thumbnail_path: Local path to thumbnail image
+            scheduled_time: When to post the thread
+
+        Returns:
+            thread_id if successful, None otherwise
+        """
+        try:
+            thread_id = f"{account_name}_{episode_id}_{int(datetime.now().timestamp())}"
+
+            if scheduled_time is None:
+                scheduled_time = datetime.now() + timedelta(hours=1)
+
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO thread_queue
+                    (thread_id, account_name, podcast_name, podcast_handle,
+                     host_handles, guest_handles, episode_id, episode_title,
+                     tweets_json, thumbnail_path, scheduled_time, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    thread_id,
+                    account_name,
+                    podcast_name,
+                    podcast_handle,
+                    json.dumps(host_handles or [], ensure_ascii=False),
+                    json.dumps(guest_handles or [], ensure_ascii=False),
+                    episode_id,
+                    episode_title,
+                    json.dumps(thread_tweets, ensure_ascii=False),
+                    thumbnail_path,
+                    scheduled_time.isoformat(),
+                    'scheduled'
+                ))
+
+            logger.info(f"Added thread to queue: {thread_id} ({len(thread_tweets)} tweets)")
+            return thread_id
+
+        except Exception as e:
+            logger.error(f"Error adding thread to queue: {e}")
+            return None
+
+    def get_ready_threads(self, account_name: str = None) -> List[Dict]:
+        """Get threads ready for posting."""
+        now = datetime.now().isoformat()
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            query = """
+                SELECT * FROM thread_queue
+                WHERE status = 'scheduled'
+                AND scheduled_time <= ?
+            """
+            params = [now]
+
+            if account_name:
+                query += " AND account_name = ?"
+                params.append(account_name)
+
+            query += " ORDER BY scheduled_time ASC"
+
+            cursor = conn.execute(query, params)
+            threads = []
+
+            for row in cursor.fetchall():
+                thread_data = dict(row)
+                # Parse JSON fields
+                thread_data['tweets'] = json.loads(thread_data['tweets_json'])
+                thread_data['host_handles'] = json.loads(thread_data['host_handles']) if thread_data['host_handles'] else []
+                thread_data['guest_handles'] = json.loads(thread_data['guest_handles']) if thread_data['guest_handles'] else []
+                threads.append(thread_data)
+
+            return threads
+
+    def get_all_threads(self, account_name: str = None, status: str = None, limit: int = 50) -> List[Dict]:
+        """Get all threads with optional filtering."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+
+            query = "SELECT * FROM thread_queue WHERE 1=1"
+            params = []
+
+            if account_name:
+                query += " AND account_name = ?"
+                params.append(account_name)
+
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+
+            query += " ORDER BY scheduled_time DESC LIMIT ?"
+            params.append(limit)
+
+            cursor = conn.execute(query, params)
+            threads = []
+
+            for row in cursor.fetchall():
+                thread_data = dict(row)
+                thread_data['tweets'] = json.loads(thread_data['tweets_json'])
+                thread_data['host_handles'] = json.loads(thread_data['host_handles']) if thread_data['host_handles'] else []
+                thread_data['guest_handles'] = json.loads(thread_data['guest_handles']) if thread_data['guest_handles'] else []
+                threads.append(thread_data)
+
+            return threads
+
+    def update_thread_status(self,
+                            thread_id: str,
+                            status: str,
+                            **kwargs):
+        """Update thread status and metadata."""
+        updates = {"status": status, "updated_at": datetime.now().isoformat()}
+        updates.update(kwargs)
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                f"UPDATE thread_queue SET {set_clause} WHERE thread_id = ?",
+                (*updates.values(), thread_id)
+            )
+
+    def get_thread_stats(self, account_name: str = None) -> Dict[str, int]:
+        """Get statistics about the thread queue."""
+        with sqlite3.connect(self.db_path) as conn:
+            query_base = "SELECT status, COUNT(*) FROM thread_queue"
+            params = []
+
+            if account_name:
+                query_base += " WHERE account_name = ?"
+                params.append(account_name)
+
+            query_base += " GROUP BY status"
+
+            cursor = conn.execute(query_base, params)
+            stats = dict(cursor.fetchall())
+
+            return {
+                'scheduled': stats.get('scheduled', 0),
+                'posted': stats.get('posted', 0),
+                'failed': stats.get('failed', 0),
+                'total': sum(stats.values())
+            }
+
+
 class TweetQueue:
-    """Manages the queue of tweets to be posted."""
-    
+    """Manages the queue of tweets to be posted (legacy - kept for backwards compatibility)."""
+
     def __init__(self, db_path: str = "data/tweet_queue.db"):
         """Initialize tweet queue database."""
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(exist_ok=True)
         self._init_database()
-    
+
     def _init_database(self):
         """Create tweet queue tables."""
         with sqlite3.connect(self.db_path) as conn:
@@ -208,7 +417,7 @@ class TweetQueue:
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
             # Create indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_account_status ON tweet_queue (account_name, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_time ON tweet_queue (scheduled_time)")
@@ -227,7 +436,7 @@ class TweetQueue:
                 """, (
                     scheduled_tweet.tweet_id,
                     scheduled_tweet.account_name,
-                    json.dumps(scheduled_tweet.content.to_dict()),
+                    json.dumps(scheduled_tweet.content.to_dict(), ensure_ascii=False),
                     scheduled_tweet.scheduled_time.isoformat(),
                     scheduled_tweet.status.value,
                     scheduled_tweet.posting_strategy.value,
@@ -275,7 +484,16 @@ class TweetQueue:
                 # Reconstruct ViralTweet from JSON
                 content_data = json.loads(tweet_data['content_json'])
                 content_data['tweet_format'] = TweetFormat(content_data['tweet_format'])
-                viral_tweet = ViralTweet(**content_data)
+
+                # Filter to only valid ViralTweet fields to avoid unknown keyword arguments
+                valid_fields = {
+                    'content', 'tweet_format', 'character_count', 'thread_tweets', 'thread_count',
+                    'poll_question', 'poll_options', 'quote_card_text', 'quote_card_author',
+                    'hashtags', 'mentions', 'timestamp_link', 'hooks', 'cta', 'engagement_triggers',
+                    'predicted_engagement', 'viral_score', 'target_audience'
+                }
+                filtered_content = {k: v for k, v in content_data.items() if k in valid_fields}
+                viral_tweet = ViralTweet(**filtered_content)
                 
                 # Create ScheduledTweet
                 scheduled_tweet = ScheduledTweet(
@@ -341,30 +559,197 @@ class TweetQueue:
 
 class ViralScheduler:
     """Main scheduler that orchestrates tweet posting and optimization."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  x_accounts: Dict[str, Dict],
                  posting_frequency: Dict[str, int] = None):
         """
         Initialize viral scheduler.
-        
+
         Args:
             x_accounts: Dict of account_name -> X.com credentials
             posting_frequency: Dict of account_name -> tweets_per_day
         """
         self.accounts = x_accounts
         self.posting_frequency = posting_frequency or {}
-        
+
         # Initialize components
-        self.queue = TweetQueue()
+        self.queue = TweetQueue()  # Legacy individual tweet queue
+        self.thread_queue = ThreadQueue()  # New thread-based queue
         self.timing_analyzer = OptimalTimingAnalyzer()
-        
+
         # Scheduler state
         self._scheduler_thread = None
         self._scheduler_running = False
-        
+
+        # Tweepy API instances for media upload (requires v1.1 API)
+        self._api_instances = {}
+
         logger.info(f"ViralScheduler initialized for {len(x_accounts)} accounts")
-    
+
+    def _get_api_instance(self, account_name: str):
+        """Get Tweepy API v1.1 instance for media uploads."""
+        if account_name in self._api_instances:
+            return self._api_instances[account_name]
+
+        account_config = self.accounts.get(account_name)
+        if not account_config:
+            return None
+
+        try:
+            import tweepy
+
+            auth = tweepy.OAuth1UserHandler(
+                account_config.get('consumer_key'),
+                account_config.get('consumer_secret'),
+                account_config.get('access_token'),
+                account_config.get('access_token_secret')
+            )
+            api = tweepy.API(auth)
+            self._api_instances[account_name] = api
+            return api
+        except Exception as e:
+            logger.error(f"Error creating API instance for {account_name}: {e}")
+            return None
+
+    def _get_client_instance(self, account_config: Dict):
+        """Get Tweepy Client v2 instance for posting tweets."""
+        import tweepy
+
+        return tweepy.Client(
+            bearer_token=account_config.get('bearer_token'),
+            consumer_key=account_config.get('consumer_key'),
+            consumer_secret=account_config.get('consumer_secret'),
+            access_token=account_config.get('access_token'),
+            access_token_secret=account_config.get('access_token_secret'),
+            wait_on_rate_limit=True
+        )
+
+    def schedule_thread(self,
+                        thread_tweets: List[str],
+                        account_name: str,
+                        podcast_name: str = None,
+                        podcast_handle: str = None,
+                        host_handles: List[str] = None,
+                        guest_handles: List[str] = None,
+                        episode_id: str = None,
+                        episode_title: str = None,
+                        thumbnail_path: str = None,
+                        scheduled_time: datetime = None) -> Optional[str]:
+        """
+        Schedule a complete thread for posting.
+
+        Args:
+            thread_tweets: List of tweet strings in order
+            account_name: X.com account to post from
+            podcast_name: Name of the podcast
+            podcast_handle: @handle of the podcast
+            host_handles: List of host @handles
+            guest_handles: List of guest @handles
+            episode_id: Source episode ID
+            episode_title: Title of the episode
+            thumbnail_path: Local path to thumbnail image
+            scheduled_time: When to post the thread
+
+        Returns:
+            thread_id if successful, None otherwise
+        """
+        return self.thread_queue.add_thread(
+            thread_tweets=thread_tweets,
+            account_name=account_name,
+            podcast_name=podcast_name,
+            podcast_handle=podcast_handle,
+            host_handles=host_handles,
+            guest_handles=guest_handles,
+            episode_id=episode_id,
+            episode_title=episode_title,
+            thumbnail_path=thumbnail_path,
+            scheduled_time=scheduled_time
+        )
+
+    def _post_thread(self, thread_record: Dict) -> bool:
+        """
+        Post an entire thread as connected replies with media.
+
+        Args:
+            thread_record: Dict containing thread data from database
+
+        Returns:
+            True if all tweets posted successfully, False otherwise
+        """
+        try:
+            account_name = thread_record['account_name']
+            account_config = self.accounts.get(account_name)
+
+            if not account_config:
+                logger.error(f"No config found for account: {account_name}")
+                self.thread_queue.update_thread_status(thread_record['thread_id'], 'failed')
+                return False
+
+            # Get API instances
+            client = self._get_client_instance(account_config)
+            api = self._get_api_instance(account_name)
+
+            tweets = thread_record['tweets']
+            thumbnail_path = thread_record.get('thumbnail_path')
+            tweet_ids = []
+
+            logger.info(f"Posting thread {thread_record['thread_id']} ({len(tweets)} tweets)")
+
+            for i, tweet_text in enumerate(tweets):
+                try:
+                    if i == 0:
+                        # First tweet: include thumbnail if available
+                        if thumbnail_path and Path(thumbnail_path).exists() and api:
+                            logger.info(f"Uploading media: {thumbnail_path}")
+                            media = api.media_upload(thumbnail_path)
+                            response = client.create_tweet(
+                                text=tweet_text,
+                                media_ids=[media.media_id]
+                            )
+                        else:
+                            response = client.create_tweet(text=tweet_text)
+                    else:
+                        # Reply to previous tweet
+                        response = client.create_tweet(
+                            text=tweet_text,
+                            in_reply_to_tweet_id=tweet_ids[-1]
+                        )
+
+                    tweet_ids.append(response.data['id'])
+                    logger.info(f"Posted tweet {i+1}/{len(tweets)}: {response.data['id']}")
+
+                    # Small delay between posts
+                    if i < len(tweets) - 1:
+                        time.sleep(1.5)
+
+                except Exception as e:
+                    logger.error(f"Error posting tweet {i+1} in thread: {e}")
+                    # Mark as failed but continue tracking what we posted
+                    self.thread_queue.update_thread_status(
+                        thread_record['thread_id'],
+                        'failed',
+                        first_tweet_id=tweet_ids[0] if tweet_ids else None,
+                        posted_time=datetime.now().isoformat()
+                    )
+                    return False
+
+            # All tweets posted successfully
+            self.thread_queue.update_thread_status(
+                thread_record['thread_id'],
+                'posted',
+                first_tweet_id=tweet_ids[0] if tweet_ids else None,
+                posted_time=datetime.now().isoformat()
+            )
+
+            logger.info(f"Successfully posted thread {thread_record['thread_id']} - first tweet: {tweet_ids[0]}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error posting thread {thread_record.get('thread_id')}: {e}")
+            self.thread_queue.update_thread_status(thread_record['thread_id'], 'failed')
+            return False
+
     def schedule_tweets(self, 
                        tweets: List[ViralTweet],
                        account_name: str,
@@ -450,18 +835,23 @@ class ViralScheduler:
         """Main scheduler loop."""
         while self._scheduler_running:
             try:
-                # Check for ready tweets
+                # Check for ready threads (new thread-based queue)
+                ready_threads = self.thread_queue.get_ready_threads()
+                for thread in ready_threads:
+                    logger.info(f"Processing thread: {thread['thread_id']}")
+                    self._post_thread(thread)
+
+                # Check for ready individual tweets (legacy queue)
                 ready_tweets = self.queue.get_ready_tweets()
-                
                 for tweet in ready_tweets:
                     self._post_tweet(tweet)
-                
-                # Sleep for 1 minute before next check
-                time.sleep(60)
-                
+
+                # Sleep before next check (default: 5 minutes)
+                time.sleep(SCHEDULER_CHECK_INTERVAL)
+
             except Exception as e:
                 logger.error(f"Error in scheduler loop: {e}")
-                time.sleep(60)  # Continue after error
+                time.sleep(SCHEDULER_CHECK_INTERVAL)  # Continue after error
     
     def _post_tweet(self, scheduled_tweet: ScheduledTweet) -> bool:
         """Post a single tweet."""
@@ -510,29 +900,36 @@ class ViralScheduler:
             )
             
             content = scheduled_tweet.content
-            
+
             if content.tweet_format == TweetFormat.SINGLE:
                 # Post single tweet
                 response = client.create_tweet(text=content.content)
                 return response.data['id'] is not None
-                
+
             elif content.tweet_format == TweetFormat.THREAD:
-                # Post thread
-                tweet_ids = []
-                for i, tweet_text in enumerate(content.thread_tweets):
-                    if i == 0:
-                        # First tweet
-                        response = client.create_tweet(text=tweet_text)
-                        tweet_ids.append(response.data['id'])
-                    else:
-                        # Reply to previous tweet
-                        response = client.create_tweet(
-                            text=tweet_text,
-                            in_reply_to_tweet_id=tweet_ids[-1]
-                        )
-                        tweet_ids.append(response.data['id'])
-                
-                return len(tweet_ids) == len(content.thread_tweets)
+                # Check if we have thread_tweets array or just content
+                if content.thread_tweets and len(content.thread_tweets) > 0:
+                    # Post full thread
+                    tweet_ids = []
+                    for i, tweet_text in enumerate(content.thread_tweets):
+                        if i == 0:
+                            # First tweet
+                            response = client.create_tweet(text=tweet_text)
+                            tweet_ids.append(response.data['id'])
+                        else:
+                            # Reply to previous tweet
+                            response = client.create_tweet(
+                                text=tweet_text,
+                                in_reply_to_tweet_id=tweet_ids[-1]
+                            )
+                            tweet_ids.append(response.data['id'])
+
+                    return len(tweet_ids) == len(content.thread_tweets)
+                else:
+                    # Single tweet within a thread (stored as individual rows)
+                    # Just post the content as a single tweet
+                    response = client.create_tweet(text=content.content)
+                    return response.data['id'] is not None
                 
             elif content.tweet_format == TweetFormat.POLL:
                 # Post poll

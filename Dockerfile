@@ -44,5 +44,5 @@ HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
                    m = HealthMonitor(); status, _ = m.check_all(); \
                    sys.exit(0 if status.value == 'healthy' else 1)"
 
-# Default command: Run autonomous orchestrator
-CMD ["python", "src/autonomous_orchestrator.py"]
+# Default command: Run daemon (sets up env vars and runs orchestrator)
+CMD ["python", "daemon.py"]
