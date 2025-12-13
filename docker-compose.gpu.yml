@@ -1,0 +1,96 @@
+version: '3.8'
+
+# GPU-enabled Docker Compose for Windows/Linux with NVIDIA GPU
+# Usage: docker-compose -f docker-compose.gpu.yml up --build -d
+
+services:
+  podcasts-tldr:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: podcasts-tldr-gpu
+    restart: unless-stopped
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Additional environment overrides
+    environment:
+      - DISCOVERY_INTERVAL=${DISCOVERY_INTERVAL:-14400}
+      - PROCESSING_INTERVAL=${PROCESSING_INTERVAL:-1800}
+      - SCHEDULER_CHECK_INTERVAL=${SCHEDULER_CHECK_INTERVAL:-300}
+      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-300}
+      - MAX_EPISODES_PER_CYCLE=${MAX_EPISODES_PER_CYCLE:-5}
+      - MAX_API_COST_PER_DAY=${MAX_API_COST_PER_DAY:-50.0}
+      - MAX_TWEETS_PER_DAY=${MAX_TWEETS_PER_DAY:-100}
+      # GPU configuration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - WHISPER_DEVICE=cuda
+
+    # Volumes for persistent data
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./output:/app/output
+      - ./cache:/app/cache
+      - ./backups:/app/backups
+      - ./viral_config.json:/app/viral_config.json:ro
+
+    # GPU resource allocation
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check (longer start period for GPU model loading)
+    healthcheck:
+      test: ["CMD", "python", "-c", "from src.health_monitor import HealthMonitor; m = HealthMonitor(); m.check_all()"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+
+  # Web dashboard for monitoring
+  web-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    container_name: podcasts-tldr-web-gpu
+    restart: unless-stopped
+    command: ["python", "src/web_dashboard.py", "--port", "5000"]
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data:ro
+      - ./logs:/app/logs:ro
+    depends_on:
+      - podcasts-tldr
+
+# Networks
+networks:
+  default:
+    name: podcasts-tldr-gpu-network
+
+# Volumes (for named volumes, if needed)
+volumes:
+  data:
+  logs:
+  output:
+  cache:
+  backups:

@@ -1,6 +1,7 @@
 """Multi-source transcriber supporting YouTube, Whisper, and other methods."""
 
 import logging
+import os
 from typing import Optional, Dict, Any, List
 from enum import Enum
 
@@ -54,9 +55,11 @@ class MultiTranscriber:
         
         # Initialize local Whisper if available
         if is_whisper_available():
+            # Use WHISPER_DEVICE env var (set by docker-compose.gpu.yml for GPU support)
+            whisper_device = os.environ.get("WHISPER_DEVICE", "auto")
             self.local_whisper = LocalWhisperTranscriber(
                 model_size=local_whisper_model,
-                device="cpu"  # Default to CPU for compatibility
+                device=whisper_device
             )
             self.local_whisper_cache = LocalWhisperCache()
         else:

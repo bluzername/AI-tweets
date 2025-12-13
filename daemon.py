@@ -32,6 +32,7 @@ os.environ.setdefault("DISCOVERY_INTERVAL", "14400")      # 4 hours
 os.environ.setdefault("PROCESSING_INTERVAL", "1800")       # 30 minutes
 os.environ.setdefault("SCHEDULER_CHECK_INTERVAL", "300")   # 5 minutes
 os.environ.setdefault("MAX_EPISODES_PER_CYCLE", "5")
+os.environ.setdefault("WHISPER_DEVICE", "auto")            # auto, cpu, cuda, mps
 
 # Load .env file
 from dotenv import load_dotenv
