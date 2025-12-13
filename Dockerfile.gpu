@@ -43,7 +43,8 @@ COPY --chown=podcasts:podcasts requirements-gpu.txt .
 
 # Install Python dependencies with CUDA support
 # Note: PyTorch with CUDA is installed from the extra index URL in requirements-gpu.txt
-RUN pip install --no-cache-dir -r requirements-gpu.txt
+# --ignore-installed bypasses conflicts with distutils packages in NVIDIA base image
+RUN pip install --no-cache-dir --ignore-installed -r requirements-gpu.txt
 
 # Copy application code
 COPY --chown=podcasts:podcasts . .
