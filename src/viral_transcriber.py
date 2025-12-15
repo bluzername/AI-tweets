@@ -173,14 +173,13 @@ class EnhancedLocalWhisper:
                     raise
 
             # Transcribe with word-level timestamps
-            # MPS and CPU don't support fp16
-            fp16 = device not in ["mps", "cpu"]
+            # Disable fp16 - causes NaN errors on some NVIDIA GPUs
             result = model.transcribe(
                 temp_audio,
                 language=language,
                 word_timestamps=True,
                 verbose=False,
-                fp16=fp16
+                fp16=False
             )
             
             # Extract segments with timestamps

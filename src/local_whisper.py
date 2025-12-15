@@ -131,8 +131,9 @@ class LocalWhisperTranscriber:
             logger.info(f"Transcribing {file_size:.1f}MB file with local Whisper on {self.device.upper()}...")
 
             # Transcribe with local Whisper
-            # MPS (Apple Silicon) and CPU don't support fp16, use fp32
-            options = {"fp16": False if self.device in ["mps", "cpu"] else True}
+            # Disable fp16 on all devices - fp16 causes NaN errors on some NVIDIA GPUs
+            # The speed difference is minimal and fp32 is more stable
+            options = {"fp16": False}
             if language:
                 options["language"] = language
 
