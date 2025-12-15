@@ -139,7 +139,21 @@ class EpisodeDatabase:
             except sqlite3.OperationalError:
                 logger.info("Adding thumbnail_local_path column to episodes table")
                 conn.execute("ALTER TABLE episodes ADD COLUMN thumbnail_local_path TEXT")
-    
+
+            # Migration: Add insights_count column if it doesn't exist
+            try:
+                conn.execute("SELECT insights_count FROM episodes LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("Adding insights_count column to episodes table")
+                conn.execute("ALTER TABLE episodes ADD COLUMN insights_count INTEGER DEFAULT 0")
+
+            # Migration: Add tweets_generated_count column if it doesn't exist
+            try:
+                conn.execute("SELECT tweets_generated_count FROM episodes LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("Adding tweets_generated_count column to episodes table")
+                conn.execute("ALTER TABLE episodes ADD COLUMN tweets_generated_count INTEGER DEFAULT 0")
+
     def episode_exists(self, episode_id: str) -> bool:
         """Check if episode already exists in database."""
         with sqlite3.connect(self.db_path) as conn:
