@@ -54,6 +54,7 @@ output/
 !INSTALLATION.md
 !COST_OPTIMIZATION.md
 !SETUP_GUIDE.md
+!DEPLOYMENT.md
 
 # Cache
 .transcription_cache/
