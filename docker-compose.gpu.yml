@@ -35,7 +35,9 @@ services:
       - ./output:/app/output
       - ./cache:/app/cache
       - ./backups:/app/backups
-      - ./viral_config.json:/app/viral_config.json:ro
+      # Note: viral_config.json is baked into image at build time
+      # To override, create local file and uncomment:
+      # - ./viral_config.json:/app/viral_config.json:ro
 
     # GPU resource allocation
     deploy:

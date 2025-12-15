@@ -1,0 +1,68 @@
+{
+  "podcast_feeds": [
+    "https://lexfridman.com/feed/podcast/",
+    "https://allinchamathjason.libsyn.com/rss",
+    "https://feeds.megaphone.fm/hubermanlab",
+    "https://feeds.transistor.fm/acquired"
+  ],
+  "podcast_handles": {
+    "Lex Fridman Podcast": {
+      "podcast_handle": "@lexfridman",
+      "host_handles": ["@lexfridman"]
+    },
+    "All-In with Chamath, Jason, Sacks & Friedberg": {
+      "podcast_handle": "@theallinpod",
+      "host_handles": ["@chamath", "@Jason", "@DavidSacks", "@friedberg"]
+    },
+    "Huberman Lab": {
+      "podcast_handle": "@hubermanlab",
+      "host_handles": ["@AndrewHuberman"]
+    },
+    "Acquired": {
+      "podcast_handle": "@AcquiredFM",
+      "host_handles": ["@benjgilbert", "@djrosent"]
+    }
+  },
+  "transcription_methods": ["youtube", "local_whisper", "whisper"],
+  "key_points_per_episode": 5,
+  "max_insights_per_episode": 3,
+  "min_viral_score": 0.4,
+  "min_educational_value": 0.7,
+  "posting_strategy": "optimal_time",
+  "posting_frequency": {
+    "podcasts_tldr": 3
+  },
+  "x_accounts": {
+    "podcasts_tldr": {
+      "consumer_key": "YOUR_CONSUMER_KEY",
+      "consumer_secret": "YOUR_CONSUMER_SECRET",
+      "access_token": "YOUR_ACCESS_TOKEN",
+      "access_token_secret": "YOUR_ACCESS_TOKEN_SECRET",
+      "bearer_token": "YOUR_BEARER_TOKEN"
+    }
+  },
+  "twitter_accounts": [
+    {
+      "name": "main",
+      "enabled": true,
+      "audience": "tech professionals and entrepreneurs",
+      "tone": "authoritative yet accessible",
+      "use_emojis": true,
+      "max_hashtags": 3
+    }
+  ],
+  "ai_models": {
+    "transcription": "whisper-1",
+    "analysis": {
+      "enabled_models": ["gpt-4-turbo-preview", "claude-3-sonnet", "gemini-pro"],
+      "consensus_threshold": 0.7
+    }
+  },
+  "content_settings": {
+    "max_insights_per_episode": 3,
+    "min_insight_length": 100,
+    "hook_variants_per_insight": 5,
+    "enable_deduplication": true,
+    "similarity_threshold": 0.85
+  }
+}
