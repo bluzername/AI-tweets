@@ -1,11 +1,19 @@
 {
   "podcast_feeds": [
+    "https://spotifeed.timdorr.com/4rOoJ6Egrf8K2IrywzwOMk",
     "https://lexfridman.com/feed/podcast/",
     "https://allinchamathjason.libsyn.com/rss",
     "https://feeds.megaphone.fm/hubermanlab",
-    "https://feeds.transistor.fm/acquired"
+    "https://feeds.transistor.fm/acquired",
+    "https://feeds.simplecast.com/AuWJKpna",
+    "https://rss2.flightcast.com/xmsftuzjjykcmqwolaqn6mdn",
+    "https://feeds.art19.com/masters-of-scale"
   ],
   "podcast_handles": {
+    "The Joe Rogan Experience": {
+      "podcast_handle": "@joerogan",
+      "host_handles": ["@joerogan"]
+    },
     "Lex Fridman Podcast": {
       "podcast_handle": "@lexfridman",
       "host_handles": ["@lexfridman"]
@@ -21,6 +29,26 @@
     "Acquired": {
       "podcast_handle": "@AcquiredFM",
       "host_handles": ["@benjgilbert", "@djrosent"]
+    },
+    "a16z Podcast": {
+      "podcast_handle": "@a16z",
+      "host_handles": ["@smc90", "@stephsmithio"]
+    },
+    "a16z Live": {
+      "podcast_handle": "@a16z",
+      "host_handles": ["@a16z"]
+    },
+    "The Diary Of A CEO": {
+      "podcast_handle": "@Diary_Of_A_CEO",
+      "host_handles": ["@StevenBartlett"]
+    },
+    "The Diary Of A CEO with Steven Bartlett": {
+      "podcast_handle": "@Diary_Of_A_CEO",
+      "host_handles": ["@StevenBartlett"]
+    },
+    "Masters of Scale": {
+      "podcast_handle": "@mastersofscale",
+      "host_handles": ["@reidhoffman"]
     }
   },
   "transcription_methods": ["youtube", "local_whisper", "whisper"],
