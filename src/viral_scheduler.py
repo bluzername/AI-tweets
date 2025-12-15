@@ -20,6 +20,7 @@ import threading
 SCHEDULER_CHECK_INTERVAL = int(os.environ.get("SCHEDULER_CHECK_INTERVAL", "300"))
 
 from .viral_tweet_crafter import ViralTweet, TweetFormat
+from .optimal_timing import OptimalTimingAnalyzer as DataDrivenTimingAnalyzer, get_next_optimal_posting_time
 
 logger = logging.getLogger(__name__)
 
@@ -205,10 +206,31 @@ class ThreadQueue:
                     status TEXT DEFAULT 'scheduled',
                     posted_time TEXT,
                     first_tweet_id TEXT,
+                    all_tweet_ids TEXT,
+                    hook_variant TEXT,
+                    hook_type TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Add all_tweet_ids column if it doesn't exist (migration)
+            try:
+                conn.execute("ALTER TABLE thread_queue ADD COLUMN all_tweet_ids TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            # Add hook_variant column if it doesn't exist (migration)
+            try:
+                conn.execute("ALTER TABLE thread_queue ADD COLUMN hook_variant TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+            # Add hook_type column if it doesn't exist (migration)
+            try:
+                conn.execute("ALTER TABLE thread_queue ADD COLUMN hook_type TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
             # Create indexes
             conn.execute("CREATE INDEX IF NOT EXISTS idx_thread_account_status ON thread_queue (account_name, status)")
@@ -225,7 +247,10 @@ class ThreadQueue:
                    episode_id: str = None,
                    episode_title: str = None,
                    thumbnail_path: str = None,
-                   scheduled_time: datetime = None) -> Optional[str]:
+                   scheduled_time: datetime = None,
+                   use_optimal_timing: bool = True,
+                   hook_variant: str = None,
+                   hook_type: str = None) -> Optional[str]:
         """
         Add a complete thread to the queue.
 
@@ -240,6 +265,9 @@ class ThreadQueue:
             episode_title: Title of the episode
             thumbnail_path: Local path to thumbnail image
             scheduled_time: When to post the thread
+            use_optimal_timing: If True and scheduled_time is None, use data-driven optimal timing
+            hook_variant: The specific hook text used (for A/B testing)
+            hook_type: Type of hook used (question, stat, controversy, etc.)
 
         Returns:
             thread_id if successful, None otherwise
@@ -248,15 +276,25 @@ class ThreadQueue:
             thread_id = f"{account_name}_{episode_id}_{int(datetime.now().timestamp())}"
 
             if scheduled_time is None:
-                scheduled_time = datetime.now() + timedelta(hours=1)
+                if use_optimal_timing:
+                    # Use data-driven optimal timing analyzer
+                    scheduled_time = get_next_optimal_posting_time(min_hours=1)
+                    logger.info(f"Using optimal timing: {scheduled_time}")
+                else:
+                    scheduled_time = datetime.now() + timedelta(hours=1)
+
+            # Auto-detect hook type from first tweet if not provided
+            if hook_type is None and thread_tweets:
+                hook_type = self._detect_hook_type(thread_tweets[0])
 
             with sqlite3.connect(self.db_path) as conn:
                 conn.execute("""
                     INSERT INTO thread_queue
                     (thread_id, account_name, podcast_name, podcast_handle,
                      host_handles, guest_handles, episode_id, episode_title,
-                     tweets_json, thumbnail_path, scheduled_time, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tweets_json, thumbnail_path, scheduled_time, status,
+                     hook_variant, hook_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     thread_id,
                     account_name,
@@ -269,15 +307,52 @@ class ThreadQueue:
                     json.dumps(thread_tweets, ensure_ascii=False),
                     thumbnail_path,
                     scheduled_time.isoformat(),
-                    'scheduled'
+                    'scheduled',
+                    hook_variant,
+                    hook_type
                 ))
 
-            logger.info(f"Added thread to queue: {thread_id} ({len(thread_tweets)} tweets)")
+            logger.info(f"Added thread to queue: {thread_id} ({len(thread_tweets)} tweets, hook: {hook_type})")
             return thread_id
 
         except Exception as e:
             logger.error(f"Error adding thread to queue: {e}")
             return None
+
+    def _detect_hook_type(self, first_tweet: str) -> str:
+        """
+        Auto-detect the type of hook used in the first tweet.
+
+        Args:
+            first_tweet: The opening tweet of the thread
+
+        Returns:
+            Hook type: question, stat, controversy, story, insight, quote
+        """
+        # Check for question patterns
+        if '?' in first_tweet:
+            return 'question'
+
+        # Check for statistic/number patterns
+        if any(char.isdigit() for char in first_tweet) and any(w in first_tweet.lower() for w in ['%', 'million', 'billion', 'people', 'years']):
+            return 'stat'
+
+        # Check for controversial/surprising patterns
+        controversial_words = ['never', 'always', 'wrong', 'myth', 'actually', 'truth', 'secret', 'unpopular']
+        if any(word in first_tweet.lower() for word in controversial_words):
+            return 'controversy'
+
+        # Check for quote patterns (starts with quote mark)
+        if first_tweet.strip().startswith('"') or first_tweet.strip().startswith('"'):
+            return 'quote'
+
+        # Check for story patterns
+        story_words = ['i was', 'i learned', 'years ago', 'my experience', 'journey', 'story']
+        if any(word in first_tweet.lower() for word in story_words):
+            return 'story'
+
+        # Default to insight
+        return 'insight'
 
     def get_ready_threads(self, account_name: str = None) -> List[Dict]:
         """Get threads ready for posting."""
@@ -308,6 +383,7 @@ class ThreadQueue:
                 thread_data['tweets'] = json.loads(thread_data['tweets_json'])
                 thread_data['host_handles'] = json.loads(thread_data['host_handles']) if thread_data['host_handles'] else []
                 thread_data['guest_handles'] = json.loads(thread_data['guest_handles']) if thread_data['guest_handles'] else []
+                thread_data['all_tweet_ids'] = json.loads(thread_data['all_tweet_ids']) if thread_data.get('all_tweet_ids') else []
                 threads.append(thread_data)
 
             return threads
@@ -339,6 +415,7 @@ class ThreadQueue:
                 thread_data['tweets'] = json.loads(thread_data['tweets_json'])
                 thread_data['host_handles'] = json.loads(thread_data['host_handles']) if thread_data['host_handles'] else []
                 thread_data['guest_handles'] = json.loads(thread_data['guest_handles']) if thread_data['guest_handles'] else []
+                thread_data['all_tweet_ids'] = json.loads(thread_data['all_tweet_ids']) if thread_data.get('all_tweet_ids') else []
                 threads.append(thread_data)
 
             return threads
@@ -730,6 +807,7 @@ class ViralScheduler:
                         thread_record['thread_id'],
                         'failed',
                         first_tweet_id=tweet_ids[0] if tweet_ids else None,
+                        all_tweet_ids=json.dumps(tweet_ids) if tweet_ids else None,
                         posted_time=datetime.now().isoformat()
                     )
                     return False
@@ -739,10 +817,11 @@ class ViralScheduler:
                 thread_record['thread_id'],
                 'posted',
                 first_tweet_id=tweet_ids[0] if tweet_ids else None,
+                all_tweet_ids=json.dumps(tweet_ids) if tweet_ids else None,
                 posted_time=datetime.now().isoformat()
             )
 
-            logger.info(f"Successfully posted thread {thread_record['thread_id']} - first tweet: {tweet_ids[0]}")
+            logger.info(f"Successfully posted thread {thread_record['thread_id']} - {len(tweet_ids)} tweets: {tweet_ids}")
             return True
 
         except Exception as e:

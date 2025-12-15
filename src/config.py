@@ -107,7 +107,7 @@ class Config:
             return
         
         try:
-            with open(self.config_file, 'r') as f:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             for podcast_data in data.get("podcasts", []):
@@ -174,9 +174,9 @@ class Config:
             ]
         }
         
-        with open(self.config_file, 'w') as f:
-            json.dump(default_config, f, indent=2)
-        
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(default_config, f, indent=2, ensure_ascii=False)
+
         logger.info(f"Created default config at {self.config_file}")
         
         self._create_env_example()
@@ -261,7 +261,7 @@ LOG_LEVEL=INFO
             "accounts": [a.to_dict() for a in self.accounts.values()]
         }
         
-        with open(self.config_file, 'w') as f:
-            json.dump(data, f, indent=2)
-        
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
         logger.info(f"Configuration saved to {self.config_file}")

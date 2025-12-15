@@ -34,6 +34,7 @@ from src.viral_insight_extractor import ViralContentAnalyzer, InsightDatabase
 from src.viral_tweet_crafter import ViralTweetCrafter
 from src.viral_scheduler import ViralScheduler, PostingStrategy
 from src.web_interface import create_app, create_templates
+from src.hashtag_optimizer import HashtagOptimizer
 from src.error_handling import (
     ErrorAggregator, ErrorClassifier, ErrorCategory,
     retry_with_backoff, safe_execute, try_or_default,
@@ -546,6 +547,29 @@ class PodcastsTLDRPipeline:
 
                     overall_progress.remove_task(step_task)
                     console.print(f"[green]  ✓ Thread validated successfully[/green]")
+
+                    # Step 6b: Add strategic hashtags to final tweet
+                    try:
+                        hashtag_optimizer = HashtagOptimizer()
+                        # Get content-based hashtags
+                        hashtags = hashtag_optimizer.get_hashtags_for_content(
+                            content=' '.join(thread[:3]),  # Analyze first 3 tweets for context
+                            podcast_name=episode.podcast_name,
+                            episode_title=episode.title,
+                            max_hashtags=3
+                        )
+                        if hashtags and thread:
+                            # Add hashtags to the final tweet (tweet 6 - CTA tweet)
+                            final_tweet = thread[-1]
+                            hashtag_str = ' '.join(hashtags)
+                            # Only add if it fits within 280 chars
+                            if len(final_tweet) + len(hashtag_str) + 2 <= 280:
+                                thread[-1] = f"{final_tweet}\n\n{hashtag_str}"
+                                console.print(f"[green]  ✓ Added hashtags: {hashtag_str}[/green]")
+                            else:
+                                console.print(f"[yellow]  ℹ Skipped hashtags (tweet too long)[/yellow]")
+                    except Exception as e:
+                        console.print(f"[yellow]  ℹ Could not add hashtags: {e}[/yellow]")
 
                     # Step 7: Schedule the thread using new thread-based storage
                     step_task = overall_progress.add_task(

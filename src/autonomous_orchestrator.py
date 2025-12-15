@@ -190,8 +190,8 @@ class AutonomousOrchestrator:
             Path("data").mkdir(exist_ok=True)
             metrics_file = "data/orchestrator_metrics.json"
 
-            with open(metrics_file, 'w') as f:
-                json.dump(self.metrics, f, indent=2)
+            with open(metrics_file, 'w', encoding='utf-8') as f:
+                json.dump(self.metrics, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Failed to save metrics: {e}")
 

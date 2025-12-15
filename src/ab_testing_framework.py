@@ -191,7 +191,7 @@ class ABTestingFramework:
                 variant_id, test_id,
                 variant_config.get("name", f"Variant {i+1}"),
                 variant_config.get("description", ""),
-                json.dumps(variant_config)
+                json.dumps(variant_config, ensure_ascii=False)
             ))
 
         conn.commit()

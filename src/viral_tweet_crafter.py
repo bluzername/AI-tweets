@@ -12,9 +12,66 @@ from enum import Enum
 import openai
 from datetime import datetime
 
+# Rich library for beautiful output
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
 from .viral_insight_extractor import ViralInsight, InsightType
+from .unicode_utils import normalize_json_response
 
 logger = logging.getLogger(__name__)
+console = Console()
+
+
+# Known podcast abbreviations for long names (>20 chars)
+PODCAST_ABBREVIATIONS = {
+    "The Diary Of A CEO with Steven Bartlett": "DOAC",
+    "The Twenty Minute VC (20VC): Venture Capital | Startup Funding | The Pitch": "20VC",
+    "Lex Fridman Podcast": "Lex Fridman",
+    "The Tim Ferriss Show": "Tim Ferriss",
+    "The Joe Rogan Experience": "JRE",
+    "The All-In Podcast": "All-In",
+}
+
+
+def get_podcast_display_name(podcast_name: str, max_length: int = 20) -> str:
+    """
+    Get a display-friendly podcast name for tweets.
+
+    Uses known abbreviations for long names, otherwise truncates if needed.
+
+    Args:
+        podcast_name: Full podcast name
+        max_length: Maximum characters (default 20)
+
+    Returns:
+        Abbreviated or shortened podcast name
+    """
+    # Check known abbreviations first
+    if podcast_name in PODCAST_ABBREVIATIONS:
+        return PODCAST_ABBREVIATIONS[podcast_name]
+
+    # If already short enough, return as-is
+    if len(podcast_name) <= max_length:
+        return podcast_name
+
+    # Try to extract a shorter form
+    # Remove common prefixes like "The"
+    shortened = podcast_name
+    if shortened.startswith("The "):
+        shortened = shortened[4:]
+
+    # Remove anything after "with", ":", or "|"
+    for separator in [" with ", ":", "|", " - "]:
+        if separator in shortened:
+            shortened = shortened.split(separator)[0].strip()
+            break
+
+    # If still too long, just truncate
+    if len(shortened) > max_length:
+        shortened = shortened[:max_length-1].strip()
+
+    return shortened
 
 
 class TweetFormat(Enum):
@@ -200,11 +257,265 @@ class ViralHookGenerator:
 
 class ThreadBuilder:
     """Builds engaging tweet threads from insights."""
-    
-    def __init__(self, openai_api_key: str, model: str = "gpt-4"):
+
+    def __init__(self, openai_api_key: str, model: str = "gpt-4", base_url: str = None):
         """Initialize thread builder."""
-        self.client = openai.OpenAI(api_key=openai_api_key)
+        if base_url:
+            self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)
+        else:
+            self.client = openai.OpenAI(api_key=openai_api_key)
         self.model = model
+
+    def build_educational_thread(
+        self,
+        key_points: List,  # List of ViralInsight objects
+        episode_title: str,
+        podcast_name: str,
+        podcast_handle: str = None,
+        host_handles: List[str] = None,
+        guest_handles: List[str] = None,
+        episode_number: str = None
+    ) -> List[str]:
+        """
+        Build a 6-tweet educational thread summarizing a podcast episode.
+
+        Tweet 1: Attribution with all handles
+        Tweets 2-6: The 5 key educational points
+
+        Args:
+            key_points: List of 5 key educational points (ViralInsight objects)
+            episode_title: Title of the episode
+            podcast_name: Name of the podcast
+            podcast_handle: Twitter handle of the podcast
+            host_handles: List of host Twitter handles
+            guest_handles: List of guest Twitter handles/names
+
+        Returns:
+            List of 6 tweet strings forming a complete thread
+        """
+        if not key_points or len(key_points) < 5:
+            logger.error(f"Need 5 key points for thread, got {len(key_points) if key_points else 0}")
+            return []
+
+        if host_handles is None:
+            host_handles = []
+        if guest_handles is None:
+            guest_handles = []
+
+        # Format points for the prompt (handle both ViralInsight objects and plain strings)
+        points_text = "\n".join([
+            f"{i+1}. {point.text if hasattr(point, 'text') else point}"
+            for i, point in enumerate(key_points[:5])
+        ])
+
+        # Format handles
+        all_handles = []
+        if podcast_handle:
+            all_handles.append(podcast_handle)
+        all_handles.extend(host_handles)
+        all_handles.extend(guest_handles)
+
+        handles_text = " ".join(all_handles) if all_handles else podcast_name
+
+        # Add episode number to title if available
+        title_with_ep = episode_title
+        if episode_number:
+            title_with_ep = f"[Ep {episode_number}] {episode_title}"
+
+        # Get abbreviated podcast name for display
+        podcast_display = get_podcast_display_name(podcast_name)
+
+        # Format episode info for prompt
+        if episode_number:
+            ep_instruction = f"Include episode number after the emoji: [Ep {episode_number}]"
+            ep_example = f'"{podcast_display} 🎙️ [Ep {episode_number}] Great insights from @Handle on [topic]!"'
+        else:
+            ep_instruction = "No episode number available - do NOT include any episode brackets"
+            ep_example = f'"{podcast_display} 🎙️ Great insights from @Handle on [topic]!"'
+
+        prompt = f"""
+Create a 6-tweet educational thread summarizing this podcast episode.
+
+PODCAST: {podcast_name}
+EPISODE TITLE: {episode_title}
+HANDLES TO TAG: {handles_text}
+
+KEY POINTS FROM EPISODE:
+{points_text}
+
+Generate EXACTLY 6 tweets:
+
+TWEET 1 (Attribution):
+- MUST start with the podcast name: "{podcast_display}"
+- Follow with the podcast emoji 🎙️
+- {ep_instruction}
+- Tag the podcast and host using the HANDLES listed above
+- Brief 1-sentence summary of what the episode covers
+- Engaging but professional tone
+- Example format: {ep_example}
+- Max 280 chars
+- NO links or URLs
+
+TWEETS 2-6 (Key Points):
+- One tweet per key point, in order
+- Number with emoji: 1️⃣, 2️⃣, 3️⃣, 4️⃣, 5️⃣
+- Factual, educational, clear
+- Each tweet standalone understandable
+- NO clickbait language
+- NO rhetorical hooks
+- NO "you won't believe" type language
+- Include speaker attribution if it adds value (e.g., "According to @handle...")
+- Max 270 chars each (accounting for numbering)
+- Minimal emoji use (only if genuinely helpful)
+- Maximum 2 relevant hashtags in final tweet only
+
+X.COM ALGORITHM OPTIMIZATION RULES:
+- Use line breaks for readability (easier to read = more engagement)
+- Ask a question in final tweet if natural (questions get replies)
+- Use @mentions naturally (tagged users may engage/retweet)
+- Keep sentences punchy and scannable
+- Use active voice (more engaging than passive)
+- Include specific numbers/data when available (stops scrolling)
+- NO external links (they reduce reach)
+- Make first line of each tweet compelling (shows in timeline)
+
+CRITICAL REQUIREMENTS:
+- All tweets must be complete, polished sentences
+- NO filler words (um, uh, you know, like)
+- Focus on SUBSTANCE and EDUCATION
+- Make each point valuable and memorable
+- Ensure proper Twitter handle format (@username)
+
+Return as JSON object with format:
+{{
+  "thread": [
+    "Tweet 1 text...",
+    "Tweet 2 text...",
+    "Tweet 3 text...",
+    "Tweet 4 text...",
+    "Tweet 5 text...",
+    "Tweet 6 text..."
+  ]
+}}
+"""
+
+        console.print(f"[dim]  Crafting 6-tweet thread with AI...[/dim]")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True
+        ) as progress:
+            task = progress.add_task("[yellow]Generating educational thread...", total=None)
+
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert at creating clear, educational Twitter threads that summarize podcast episodes."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.4  # Lower for more consistent, factual output
+                )
+
+                content = response.choices[0].message.content
+
+                # Parse JSON response and normalize unicode
+                data = normalize_json_response(json.loads(content))
+                thread_tweets = data.get('thread', [])
+
+                if len(thread_tweets) != 6:
+                    progress.stop()
+                    console.print(f"[yellow]  ⚠ Expected 6 tweets, got {len(thread_tweets)}, using fallback[/yellow]")
+                    logger.error(f"Expected 6 tweets, got {len(thread_tweets)}")
+                    return self._create_fallback_educational_thread(
+                        key_points, episode_title, podcast_name, handles_text
+                    )
+
+                # Validate each tweet
+                validated_thread = []
+                for i, tweet in enumerate(thread_tweets):
+                    if not isinstance(tweet, str):
+                        progress.stop()
+                        console.print(f"[yellow]  ⚠ Invalid tweet format, using fallback[/yellow]")
+                        logger.error(f"Tweet {i+1} is not a string")
+                        return self._create_fallback_educational_thread(
+                            key_points, episode_title, podcast_name, handles_text
+                        )
+
+                    # Check length
+                    if len(tweet) > 280:
+                        logger.warning(f"Tweet {i+1} exceeds 280 chars ({len(tweet)}), truncating")
+                        tweet = tweet[:277] + "..."
+
+                    validated_thread.append(tweet.strip())
+
+                # Ensure first tweet starts with podcast name
+                if validated_thread and not validated_thread[0].startswith(podcast_display):
+                    first_tweet = validated_thread[0]
+                    # If it starts with emoji, prepend podcast name
+                    if first_tweet.startswith("🎙️"):
+                        validated_thread[0] = f"{podcast_display} {first_tweet}"
+                    else:
+                        # Prepend podcast name + emoji
+                        validated_thread[0] = f"{podcast_display} 🎙️ {first_tweet}"
+                    # Re-check length after modification
+                    if len(validated_thread[0]) > 280:
+                        validated_thread[0] = validated_thread[0][:277] + "..."
+                    logger.debug(f"Prepended podcast name to first tweet: {podcast_display}")
+
+                console.print(f"[dim]  ✓ Created thread with {len(validated_thread)} tweets[/dim]")
+                return validated_thread
+
+            except Exception as e:
+                progress.stop()
+                console.print(f"[red]  ✗ Thread generation error: {str(e)[:60]}...[/red]")
+                logger.error(f"Error creating educational thread: {e}")
+                return self._create_fallback_educational_thread(
+                    key_points, episode_title, podcast_name, handles_text
+                )
+
+    def _create_fallback_educational_thread(
+        self,
+        key_points: List,
+        episode_title: str,
+        podcast_name: str,
+        handles_text: str,
+        episode_number: str = None
+    ) -> List[str]:
+        """
+        Create a simple fallback thread if AI generation fails.
+
+        Args:
+            key_points: List of key points
+            episode_title: Episode title
+            podcast_name: Podcast name
+            handles_text: Formatted handles string
+            episode_number: Optional episode number
+
+        Returns:
+            List of 6 tweet strings
+        """
+        thread = []
+
+        # Get abbreviated podcast name for display
+        podcast_display = get_podcast_display_name(podcast_name)
+
+        # Tweet 1: Attribution with podcast name prefix and episode number
+        ep_prefix = f"[Ep {episode_number}] " if episode_number else ""
+        thread.append(
+            f"{podcast_display} 🎙️ {ep_prefix}Key insights from {handles_text} on {episode_title[:80]}..."
+        )
+
+        # Tweets 2-6: Key points
+        emoji_numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+        for i, point in enumerate(key_points[:5]):
+            tweet = f"{emoji_numbers[i]} {point.text[:270]}"
+            thread.append(tweet)
+
+        return thread
     
     def build_thread(self, insight: ViralInsight, podcast_name: str, episode_title: str) -> List[str]:
         """Build an engaging tweet thread from an insight."""
@@ -230,14 +541,15 @@ RULES:
 - Make each tweet valuable standalone
 - Use psychological triggers (scarcity, social proof, etc.)
 - End with question or call to action
+- DO NOT add tweet numbers or "1/" "2/" prefixes - they will be added automatically
 
 THREAD STRUCTURE:
-1/ Hook tweet (curiosity/controversy)
-2-4/ Value delivery (break down the insight)
-5/ Context/credibility (podcast source)
-6/ Engagement closer (question/CTA + hashtags)
+Tweet 1: Hook tweet (curiosity/controversy)
+Tweets 2-4: Value delivery (break down the insight)
+Tweet 5: Context/credibility (podcast source)
+Tweet 6: Engagement closer (question/CTA + hashtags)
 
-Return as JSON array of tweet strings.
+Return as JSON array of tweet strings WITHOUT numbering prefixes.
 """
         
         try:
@@ -250,14 +562,14 @@ Return as JSON array of tweet strings.
             
             content = response.choices[0].message.content
             
-            # Parse JSON response
+            # Parse JSON response and normalize unicode
             try:
-                thread_tweets = json.loads(content)
+                thread_tweets = normalize_json_response(json.loads(content))
             except json.JSONDecodeError:
                 # Try to extract JSON from markdown
                 json_match = re.search(r'```(?:json)?\n?(.*?)\n?```', content, re.DOTALL)
                 if json_match:
-                    thread_tweets = json.loads(json_match.group(1))
+                    thread_tweets = normalize_json_response(json.loads(json_match.group(1)))
                 else:
                     # Fallback: create basic thread
                     return self._create_basic_thread(insight)
@@ -265,12 +577,14 @@ Return as JSON array of tweet strings.
             # Validate and clean thread
             cleaned_thread = []
             for i, tweet in enumerate(thread_tweets[:8]):  # Max 8 tweets
-                if isinstance(tweet, str) and len(tweet) <= 270:
-                    # Add numbering if not present
-                    if not re.match(r'^\d+/', tweet):
-                        tweet = f"{i+1}/ {tweet}"
-                    cleaned_thread.append(tweet)
-            
+                if isinstance(tweet, str):
+                    # Strip any existing numbering patterns (1/, 2/, etc.)
+                    tweet = re.sub(r'^\s*\d+[/)]\s*', '', tweet.strip())
+
+                    # Check length after stripping numbering
+                    if len(tweet) <= 270:
+                        cleaned_thread.append(tweet)
+
             return cleaned_thread if cleaned_thread else self._create_basic_thread(insight)
             
         except Exception as e:
@@ -342,16 +656,19 @@ class PollGenerator:
 class ViralTweetCrafter:
     """Main tweet crafting engine that creates viral content across formats."""
     
-    def __init__(self, openai_api_key: str, model: str = "gpt-4"):
+    def __init__(self, openai_api_key: str, model: str = "gpt-4", base_url: str = None):
         """Initialize viral tweet crafter."""
-        self.client = openai.OpenAI(api_key=openai_api_key)
+        if base_url:
+            self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)
+        else:
+            self.client = openai.OpenAI(api_key=openai_api_key)
         self.model = model
-        
+
         # Initialize components
         self.hook_generator = ViralHookGenerator()
-        self.thread_builder = ThreadBuilder(openai_api_key, model)
+        self.thread_builder = ThreadBuilder(openai_api_key, model, base_url=base_url)
         self.poll_generator = PollGenerator()
-        
+
         logger.info("ViralTweetCrafter initialized")
     
     def craft_viral_tweets(self, 

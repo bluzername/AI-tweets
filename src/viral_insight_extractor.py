@@ -6,6 +6,7 @@ The "brain" of the Podcasts TLDR viral content machine.
 import logging
 import json
 import re
+import time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -17,9 +18,59 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .viral_transcriber import ViralTranscriptionResult
+from .unicode_utils import normalize_json_response
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+
+def retry_openai_call(max_retries: int = 3, base_delay: float = 2.0):
+    """
+    Retry decorator for OpenAI API calls.
+    Handles rate limits, timeouts, and temporary failures.
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except openai.RateLimitError as e:
+                    # Rate limit - wait longer
+                    delay = base_delay * (3 ** attempt)  # Longer backoff for rate limits
+                    logger.warning(f"OpenAI rate limit hit, waiting {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    last_exception = e
+                except openai.APITimeoutError as e:
+                    # Timeout - retry with shorter delay
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"OpenAI timeout, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    last_exception = e
+                except openai.APIConnectionError as e:
+                    # Connection error - retry
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"OpenAI connection error, retrying in {delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    last_exception = e
+                except openai.APIStatusError as e:
+                    # Server error (5xx) - retry, client error (4xx) - don't retry
+                    if e.status_code >= 500:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"OpenAI server error {e.status_code}, retrying in {delay}s...")
+                        time.sleep(delay)
+                        last_exception = e
+                    else:
+                        # Client error - don't retry
+                        raise
+                except Exception as e:
+                    # Unknown error - don't retry
+                    raise
+            # All retries exhausted
+            logger.error(f"All {max_retries} OpenAI retries failed")
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 class InsightType(Enum):
@@ -106,6 +157,20 @@ class ViralContentAnalyzer:
                 'limited time', '2024', '2025', 'this year'
             ]
         }
+
+    @retry_openai_call(max_retries=3, base_delay=2.0)
+    def _call_openai_with_retry(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> str:
+        """Make an OpenAI API call with automatic retry on failures."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=temperature
+        )
+        return response.choices[0].message.content
     
     def extract_viral_insights(self, 
                              transcription: ViralTranscriptionResult,
@@ -237,22 +302,16 @@ CRITICAL:
 """
 
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": "You are an expert educational content curator who extracts key learnings from podcasts."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.3  # Lower temperature for more factual output
+                # Use retry-wrapped API call
+                result = self._call_openai_with_retry(
+                    system_prompt="You are an expert educational content curator who extracts key learnings from podcasts.",
+                    user_prompt=prompt,
+                    temperature=0.3
                 )
 
-                result = response.choices[0].message.content
-
-                # Parse JSON response
-                import json
+                # Parse JSON response and normalize unicode
                 try:
-                    data = json.loads(result)
+                    data = normalize_json_response(json.loads(result))
                 except json.JSONDecodeError as json_err:
                     progress.stop()
                     console.print(f"[red]  ✗ JSON parsing error: {str(json_err)[:60]}...[/red]")
@@ -284,7 +343,7 @@ CRITICAL:
                         viral_score=0.7,  # Educational value score
                         confidence=0.9,
                         hashtags=[],
-                        engagement_potential={'type': 'educational', 'value': 'high'},
+                        engagement_potential='high',  # Fixed: Changed from dict to string
                         tweet_formats=['thread'],
                         extraction_method="ai_key_points"
                     )
@@ -381,14 +440,14 @@ IMPORTANT: Focus on content that:
             
             content = response.choices[0].message.content
             
-            # Parse JSON response
+            # Parse JSON response and normalize unicode
             try:
-                ai_insights = json.loads(content)
+                ai_insights = normalize_json_response(json.loads(content))
             except json.JSONDecodeError:
                 # Try to extract JSON from markdown code blocks
                 json_match = re.search(r'```(?:json)?\n?(.*?)\n?```', content, re.DOTALL)
                 if json_match:
-                    ai_insights = json.loads(json_match.group(1))
+                    ai_insights = normalize_json_response(json.loads(json_match.group(1)))
                 else:
                     logger.error("Failed to parse AI response as JSON")
                     return []

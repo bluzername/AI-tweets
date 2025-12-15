@@ -3,6 +3,7 @@
 import os
 import logging
 import tempfile
+import time
 import requests
 from typing import Optional, Dict, Any
 from pathlib import Path
@@ -10,6 +11,27 @@ import openai
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
+
+
+def retry_download(max_retries: int = 3, base_delay: float = 2.0):
+    """Retry decorator for download operations."""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except requests.exceptions.RequestException as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Download retry {attempt + 1}/{max_retries}: {e}")
+                        time.sleep(delay)
+                    else:
+                        raise
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 class WhisperTranscriber:
@@ -81,9 +103,10 @@ class WhisperTranscriber:
             if temp_file and os.path.exists(temp_file):
                 os.remove(temp_file)
     
+    @retry_download(max_retries=3, base_delay=2.0)
     def _download_audio(self, url: str) -> str:
         """
-        Download audio file to temporary location.
+        Download audio file to temporary location with retry support.
         
         Args:
             url: URL of the audio file
@@ -91,7 +114,7 @@ class WhisperTranscriber:
         Returns:
             Path to temporary file
         """
-        response = requests.get(url, stream=True, timeout=30)
+        response = requests.get(url, stream=True, timeout=60)  # Increased timeout
         response.raise_for_status()
         
         suffix = self._get_file_extension(url, response.headers)
@@ -145,7 +168,7 @@ class TranscriptionCache:
         
         if cache_file.exists():
             try:
-                with open(cache_file, 'r') as f:
+                with open(cache_file, 'r', encoding='utf-8') as f:
                     logger.info(f"Using cached transcription for {audio_url[:50]}...")
                     return json.load(f)
             except Exception as e:
@@ -162,8 +185,8 @@ class TranscriptionCache:
         cache_file = self.cache_dir / f"{cache_key}.json"
         
         try:
-            with open(cache_file, 'w') as f:
-                json.dump(transcription, f)
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(transcription, f, ensure_ascii=False)
                 logger.info(f"Cached transcription for {audio_url[:50]}...")
         except Exception as e:
             logger.error(f"Error writing cache: {e}")

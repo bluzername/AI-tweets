@@ -114,7 +114,7 @@ class Alerting:
             history_file = Path("data/alert_history.json")
 
             if history_file.exists():
-                with open(history_file, 'r') as f:
+                with open(history_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
                     # Convert back to Alert objects (last 100 only)
@@ -138,11 +138,12 @@ class Alerting:
             Path("data").mkdir(exist_ok=True)
             history_file = Path("data/alert_history.json")
 
-            with open(history_file, 'w') as f:
+            with open(history_file, 'w', encoding='utf-8') as f:
                 json.dump(
                     [alert.to_dict() for alert in self.alert_history[-100:]],
                     f,
-                    indent=2
+                    indent=2,
+                    ensure_ascii=False
                 )
 
         except Exception as e:

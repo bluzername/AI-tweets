@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import openai
 import json
+from .unicode_utils import normalize_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class AIAnalyzer:
             )
             
             content = response.choices[0].message.content
-            highlights_data = json.loads(content)
+            highlights_data = normalize_json_response(json.loads(content))
             
             if "highlights" in highlights_data:
                 highlights_data = highlights_data["highlights"]
@@ -172,7 +173,7 @@ class AIAnalyzer:
                     response_format={"type": "json_object"}
                 )
                 
-                suggestion = json.loads(response.choices[0].message.content)
+                suggestion = normalize_json_response(json.loads(response.choices[0].message.content))
                 themes.append(suggestion)
                 
             except Exception as e:
@@ -222,7 +223,7 @@ class AIAnalyzer:
                     response_format={"type": "json_object"}
                 )
                 
-                result = json.loads(response.choices[0].message.content)
+                result = normalize_json_response(json.loads(response.choices[0].message.content))
                 highlight.relevance_score = float(result.get("score", highlight.relevance_score))
                 
             except Exception as e:

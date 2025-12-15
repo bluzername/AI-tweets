@@ -333,28 +333,45 @@ class HealthMonitor:
             )
 
     def check_openai_api(self) -> HealthCheck:
-        """Check OpenAI API connectivity."""
+        """Check OpenRouter/OpenAI API connectivity."""
         try:
             import os
             from openai import OpenAI
 
-            api_key = os.getenv("OPENAI_API_KEY") or self.config.get("openai_api_key")
+            # Check if using OpenRouter
+            use_openrouter = os.getenv("USE_OPENROUTER", "false").lower() == "true"
 
-            if not api_key or api_key == "your_openai_api_key_here":
+            if use_openrouter:
+                # Check OpenRouter API
+                api_key = os.getenv("OPENROUTER_API_KEY")
+                base_url = "https://openrouter.ai/api/v1"
+                service_name = "OpenRouter"
+                test_model = "meta-llama/llama-3.2-3b-instruct:free"
+            else:
+                # Check OpenAI API
+                api_key = os.getenv("OPENAI_API_KEY") or self.config.get("openai_api_key")
+                base_url = None
+                service_name = "OpenAI"
+                test_model = "gpt-3.5-turbo"
+
+            if not api_key or api_key in ["your_openai_api_key_here", "your_openrouter_api_key_here"]:
                 return HealthCheck(
                     name="openai_api",
                     status=HealthStatus.CRITICAL,
-                    message="OpenAI API key not configured",
+                    message=f"{service_name} API key not configured",
                     timestamp=datetime.utcnow().isoformat()
                 )
 
             # Try a simple API call
-            client = OpenAI(api_key=api_key)
+            if base_url:
+                client = OpenAI(api_key=api_key, base_url=base_url)
+            else:
+                client = OpenAI(api_key=api_key)
 
             # Test with a minimal completion
             start_time = time.time()
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=test_model,
                 messages=[{"role": "user", "content": "test"}],
                 max_tokens=5
             )
@@ -363,16 +380,43 @@ class HealthMonitor:
             return HealthCheck(
                 name="openai_api",
                 status=HealthStatus.HEALTHY,
-                message=f"OpenAI API accessible (latency: {latency_ms:.0f}ms)",
+                message=f"{service_name} API accessible (latency: {latency_ms:.0f}ms)",
                 timestamp=datetime.utcnow().isoformat(),
-                details={"latency_ms": round(latency_ms, 2)}
+                details={
+                    "latency_ms": round(latency_ms, 2),
+                    "service": service_name,
+                    "model": test_model
+                }
             )
 
         except Exception as e:
+            service_name = "OpenRouter" if os.getenv("USE_OPENROUTER", "false").lower() == "true" else "OpenAI"
+            error_msg = str(e)
+
+            # Rate limits mean the API is working, just busy
+            if "429" in error_msg or "rate_limit" in error_msg.lower():
+                return HealthCheck(
+                    name="openai_api",
+                    status=HealthStatus.WARNING,
+                    message=f"{service_name} API rate limited (API is working)",
+                    timestamp=datetime.utcnow().isoformat(),
+                    details={"note": "Rate limit means API is accessible"}
+                )
+
+            # Authentication errors are critical
+            if "401" in error_msg or "403" in error_msg or "authentication" in error_msg.lower():
+                return HealthCheck(
+                    name="openai_api",
+                    status=HealthStatus.CRITICAL,
+                    message=f"{service_name} API authentication failed",
+                    timestamp=datetime.utcnow().isoformat()
+                )
+
+            # Other errors
             return HealthCheck(
                 name="openai_api",
                 status=HealthStatus.CRITICAL,
-                message=f"OpenAI API error: {str(e)[:100]}",
+                message=f"{service_name} API error: {error_msg[:100]}",
                 timestamp=datetime.utcnow().isoformat()
             )
 
@@ -499,8 +543,8 @@ class HealthMonitor:
 
             Path(output_file).parent.mkdir(parents=True, exist_ok=True)
 
-            with open(output_file, 'w') as f:
-                json.dump(report, f, indent=2)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
 
             logger.info(f"Health report saved to {output_file}")
             return True

@@ -3,11 +3,22 @@
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from enum import Enum
 import openai
 import json
 from .ai_analyzer import PodcastHighlight
+from .unicode_utils import normalize_json_response
 
 logger = logging.getLogger(__name__)
+
+
+# Simple TweetFormat enum for compatibility with scheduler
+class TweetFormat(Enum):
+    """Tweet format types."""
+    SINGLE = "single"
+    THREAD = "thread"
+    POLL = "poll"
+    QUOTE_CARD = "quote_card"
 
 
 @dataclass
@@ -17,12 +28,20 @@ class Tweet:
     position: int
     has_media: bool = False
     media_url: Optional[str] = None
-    
+    tweet_format: TweetFormat = TweetFormat.THREAD  # For scheduler compatibility
+
     def __len__(self):
         return len(self.content)
-    
+
     def is_valid(self):
         return 0 < len(self.content) <= 280
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        from dataclasses import asdict
+        data = asdict(self)
+        data['tweet_format'] = self.tweet_format.value
+        return data
 
 
 @dataclass
@@ -143,7 +162,7 @@ class ThreadGenerator:
             )
             
             content = response.choices[0].message.content
-            thread_data = json.loads(content)
+            thread_data = normalize_json_response(json.loads(content))
             
             if "tweets" in thread_data:
                 thread_data = thread_data["tweets"]
@@ -218,7 +237,7 @@ class ThreadGenerator:
                 response_format={"type": "json_object"}
             )
             
-            result = json.loads(response.choices[0].message.content)
+            result = normalize_json_response(json.loads(response.choices[0].message.content))
             alternatives = result.get("alternatives", [])
             
             return [alt for alt in alternatives if len(alt) <= 280]

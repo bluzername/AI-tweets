@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from performance_tracker import PerformanceTracker
-from ab_testing_framework import ABTestingFramework
+from src.performance_tracker import PerformanceTracker
+from src.ab_testing_framework import ABTestingFramework
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +68,7 @@ class FeedbackLoopOptimizer:
 
         if history_file.exists():
             try:
-                with open(history_file, 'r') as f:
+                with open(history_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Could not load optimization history: {e}")
@@ -82,8 +82,8 @@ class FeedbackLoopOptimizer:
         Path(history_file).parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            with open(history_file, 'w') as f:
-                json.dump(self.optimization_history[-100:], f, indent=2)  # Keep last 100
+            with open(history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.optimization_history[-100:], f, indent=2, ensure_ascii=False)  # Keep last 100
         except Exception as e:
             logger.warning(f"Could not save optimization history: {e}")
 

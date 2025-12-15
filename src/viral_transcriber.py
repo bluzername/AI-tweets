@@ -10,6 +10,10 @@ from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta
 import requests
 
+# Rich library for beautiful output
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+
 # Import existing transcription modules
 from .multi_transcriber import MultiTranscriber, TranscriptionMethod
 from .youtube_transcriber import YouTubeTranscriber
@@ -17,6 +21,7 @@ from .local_whisper import LocalWhisperTranscriber, is_whisper_available
 from .transcriber import WhisperTranscriber
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 
 class ViralTranscriptionResult:
@@ -115,40 +120,67 @@ class ViralTranscriptionResult:
 
 class EnhancedLocalWhisper:
     """Enhanced local Whisper with speaker identification."""
-    
-    def __init__(self, model_size: str = "base", device: str = "cpu"):
-        """Initialize enhanced local Whisper."""
+
+    def __init__(self, model_size: str = "base", device: str = "auto"):
+        """Initialize enhanced local Whisper with GPU support."""
         self.model_size = model_size
         self.device = device
         self.base_transcriber = None
-        
+
         if is_whisper_available():
             self.base_transcriber = LocalWhisperTranscriber(model_size, device)
     
-    def transcribe_with_speakers(self, 
-                               audio_url: str, 
+    def transcribe_with_speakers(self,
+                               audio_url: str,
                                language: Optional[str] = None) -> ViralTranscriptionResult:
         """Transcribe audio with speaker identification and timestamps."""
         if not self.base_transcriber:
             raise RuntimeError("Local Whisper not available")
-        
+
         try:
             # Get basic transcription first
             base_result = self.base_transcriber.transcribe_audio(audio_url, language)
-            
+
             # Download audio for advanced processing
             temp_audio = self._download_audio(audio_url)
-            
+
             # Use Whisper with word-level timestamps
             import whisper
-            model = whisper.load_model(self.model_size, device=self.device)
-            
+            import torch
+
+            # Determine device with MPS fallback support
+            device = self.device
+            if device == "auto":
+                if torch.backends.mps.is_available():
+                    device = "mps"
+                elif torch.cuda.is_available():
+                    device = "cuda"
+                else:
+                    device = "cpu"
+
+            # Try to load model with preferred device, fallback to CPU on MPS errors
+            try:
+                model = whisper.load_model(self.model_size, device=device)
+            except (RuntimeError, Exception) as e:
+                error_str = str(e).lower()
+                # Catch MPS-related errors: sparse tensor ops, storage issues, Metal errors
+                mps_error_keywords = ["mps", "storage", "metal", "sparse"]
+                if device == "mps" and any(kw in error_str for kw in mps_error_keywords):
+                    logger.warning(f"MPS device error, falling back to CPU: {str(e)[:200]}")
+                    device = "cpu"
+                    model = whisper.load_model(self.model_size, device=device)
+                else:
+                    raise
+
             # Transcribe with word-level timestamps
+            # MPS and CPU don't support fp16
+            fp16 = device not in ["mps", "cpu"]
             result = model.transcribe(
                 temp_audio,
                 language=language,
                 word_timestamps=True,
-                verbose=False
+                verbose=False,
+                fp16=fp16
             )
             
             # Extract segments with timestamps
@@ -343,76 +375,105 @@ class ViralTranscriber:
         
         logger.info(f"ViralTranscriber initialized. Speaker ID: {enable_speaker_id}, Viral detection: {enable_viral_detection}")
     
-    def transcribe_for_viral_content(self, 
+    def transcribe_for_viral_content(self,
                                    audio_url: str,
                                    youtube_urls: List[str] = None,
                                    title: str = None,
                                    language: str = None) -> ViralTranscriptionResult:
         """
         Transcribe audio with viral content enhancements.
-        
+
         Args:
             audio_url: URL to audio file
             youtube_urls: Optional YouTube URLs for transcript fallback
             title: Episode title
             language: Target language
-            
+
         Returns:
             Enhanced transcription result with timestamps, speakers, and viral moments
         """
-        logger.info(f"Starting viral transcription for: {title}")
-        
-        # Try enhanced local Whisper first if available and speaker ID enabled
-        if self.enhanced_whisper and self.enable_speaker_id:
-            try:
-                result = self.enhanced_whisper.transcribe_with_speakers(audio_url, language)
-                logger.info(f"Enhanced Whisper transcription successful: {len(result.segments)} segments")
-                
-                # Add viral moment detection
-                if self.viral_detector:
-                    viral_moments = self.viral_detector.detect_viral_moments(result)
-                    result.viral_moments = viral_moments
-                    logger.info(f"Detected {len(viral_moments)} potential viral moments")
-                
-                return result
-                
-            except Exception as e:
-                logger.warning(f"Enhanced Whisper failed, falling back to standard methods: {e}")
-        
-        # Fallback to standard multi-transcriber
-        base_result = self.base_transcriber.transcribe_episode(
-            audio_url=audio_url,
-            youtube_urls=youtube_urls or [],
-            title=title or "Unknown"
-        )
-        
-        if not base_result or base_result.get('error'):
-            logger.error("All transcription methods failed")
-            return ViralTranscriptionResult(
-                text="",
-                method="failed",
-                duration=0
+        console.print(f"[dim]  Starting transcription: {(title or 'Unknown')[:50]}...[/dim]")
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=True  # Progress disappears when done
+        ) as progress:
+
+            task = progress.add_task("[yellow]Transcribing audio...", total=100)
+
+            # Try enhanced local Whisper first if available and speaker ID enabled
+            if self.enhanced_whisper and self.enable_speaker_id:
+                try:
+                    progress.update(task, description="[yellow]Using enhanced Whisper with speaker ID...")
+                    progress.update(task, advance=20)
+
+                    result = self.enhanced_whisper.transcribe_with_speakers(audio_url, language)
+                    progress.update(task, advance=60)
+
+                    console.print(f"[dim]  ✓ Transcribed {len(result.segments)} segments with speaker ID[/dim]")
+
+                    # Add viral moment detection
+                    if self.viral_detector:
+                        progress.update(task, description="[yellow]Detecting viral moments...")
+                        viral_moments = self.viral_detector.detect_viral_moments(result)
+                        result.viral_moments = viral_moments
+                        progress.update(task, advance=20)
+                        console.print(f"[dim]  ✓ Detected {len(viral_moments)} potential viral moments[/dim]")
+
+                    return result
+
+                except Exception as e:
+                    console.print(f"[yellow]  ⚠ Enhanced Whisper failed, trying fallback...[/yellow]")
+                    logger.warning(f"Enhanced Whisper failed, falling back to standard methods: {e}")
+
+            # Fallback to standard multi-transcriber
+            progress.update(task, description="[yellow]Using standard transcription...")
+            progress.update(task, advance=30)
+
+            base_result = self.base_transcriber.transcribe_episode(
+                audio_url=audio_url,
+                youtube_urls=youtube_urls or [],
+                title=title or "Unknown"
             )
-        
-        # Convert to viral result format
-        viral_result = ViralTranscriptionResult(
-            text=base_result.get('text', ''),
-            method=base_result.get('method', 'unknown'),
-            duration=base_result.get('duration'),
-            language=base_result.get('language')
-        )
-        
-        # Add basic segments if we have text
-        if viral_result.text:
-            # Create basic segments (split by sentences/paragraphs)
-            viral_result.segments = self._create_basic_segments(viral_result.text, viral_result.duration)
-        
-        # Add viral moment detection even for basic transcriptions
-        if self.viral_detector and viral_result.segments:
-            viral_moments = self.viral_detector.detect_viral_moments(viral_result)
-            viral_result.viral_moments = viral_moments
-            logger.info(f"Detected {len(viral_moments)} potential viral moments from basic transcription")
-        
+            progress.update(task, advance=50)
+
+            if not base_result or base_result.get('error'):
+                progress.update(task, completed=100)
+                console.print("[red]  ✗ All transcription methods failed[/red]")
+                logger.error("All transcription methods failed")
+                return ViralTranscriptionResult(
+                    text="",
+                    method="failed",
+                    duration=0
+                )
+
+            # Convert to viral result format
+            viral_result = ViralTranscriptionResult(
+                text=base_result.get('text', ''),
+                method=base_result.get('method', 'unknown'),
+                duration=base_result.get('duration'),
+                language=base_result.get('language')
+            )
+
+            # Add basic segments if we have text
+            if viral_result.text:
+                progress.update(task, description="[yellow]Creating segments...")
+                viral_result.segments = self._create_basic_segments(viral_result.text, viral_result.duration)
+                progress.update(task, advance=15)
+
+            # Add viral moment detection even for basic transcriptions
+            if self.viral_detector and viral_result.segments:
+                progress.update(task, description="[yellow]Detecting viral moments...")
+                viral_moments = self.viral_detector.detect_viral_moments(viral_result)
+                viral_result.viral_moments = viral_moments
+                progress.update(task, advance=5)
+                console.print(f"[dim]  ✓ Detected {len(viral_moments)} potential viral moments[/dim]")
+
         return viral_result
     
     def _create_basic_segments(self, text: str, duration: Optional[float]) -> List[Dict]:

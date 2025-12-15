@@ -349,8 +349,8 @@ class AutoRecovery:
         try:
             dlq_file = Path("data/dead_letter_queue.json")
 
-            with open(dlq_file, 'w') as f:
-                json.dump(self.dead_letter_queue, f, indent=2)
+            with open(dlq_file, 'w', encoding='utf-8') as f:
+                json.dump(self.dead_letter_queue, f, indent=2, ensure_ascii=False)
 
         except Exception as e:
             logger.error(f"Failed to save dead letter queue: {e}")
@@ -361,7 +361,7 @@ class AutoRecovery:
             dlq_file = Path("data/dead_letter_queue.json")
 
             if dlq_file.exists():
-                with open(dlq_file, 'r') as f:
+                with open(dlq_file, 'r', encoding='utf-8') as f:
                     self.dead_letter_queue = json.load(f)
 
                 logger.info(f"Loaded {len(self.dead_letter_queue)} items from dead letter queue")
@@ -381,7 +381,7 @@ class AutoRecovery:
         try:
             history_file = Path("data/recovery_history.json")
 
-            with open(history_file, 'w') as f:
+            with open(history_file, 'w', encoding='utf-8') as f:
                 json.dump(
                     [
                         {

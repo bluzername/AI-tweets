@@ -6,6 +6,7 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 tenacity>=8.2.3
 youtube-transcript-api>=0.6.2
+rich>=13.0.0
 
 # Viral content machine dependencies
 sqlalchemy>=2.0.0
@@ -27,6 +28,9 @@ google-generativeai>=0.3.0
 
 # Optional: Local Whisper for unlimited transcription
 openai-whisper>=20231117
+
+# OSINT Handle Finder dependencies
+beautifulsoup4>=4.12.0
 
 # Testing
 pytest>=7.4.0

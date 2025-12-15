@@ -44,7 +44,7 @@ class FailedAttemptsCache:
             return None
         
         try:
-            with open(cache_file, 'r') as f:
+            with open(cache_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
             # Check if expired
@@ -84,8 +84,8 @@ class FailedAttemptsCache:
         }
         
         try:
-            with open(cache_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
             logger.info(f"Cached failed attempt for {audio_url[:50]}... (method: {method})")
         except Exception as e:
             logger.error(f"Error writing failed attempts cache: {e}")
