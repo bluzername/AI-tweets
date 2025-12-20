@@ -63,6 +63,11 @@ class HealthMonitor:
     - Pipeline performance
     """
 
+    # Class-level cache for API health check (shared across instances)
+    _api_health_cache = None
+    _api_health_cache_time = None
+    _API_CACHE_DURATION_SECONDS = 300  # Cache for 5 minutes
+
     def __init__(self, config_file: str = "viral_config.json"):
         """Initialize health monitor."""
         self.config_file = config_file
@@ -333,7 +338,39 @@ class HealthMonitor:
             )
 
     def check_openai_api(self) -> HealthCheck:
-        """Check OpenRouter/OpenAI API connectivity."""
+        """Check OpenRouter/OpenAI API connectivity with caching.
+
+        Results are cached for 5 minutes to prevent hammering the API
+        on every dashboard refresh.
+        """
+        import os
+
+        # Check if we have a valid cached result
+        if (HealthMonitor._api_health_cache is not None and
+            HealthMonitor._api_health_cache_time is not None):
+            cache_age = time.time() - HealthMonitor._api_health_cache_time
+            if cache_age < HealthMonitor._API_CACHE_DURATION_SECONDS:
+                # Return cached result with updated message
+                cached = HealthMonitor._api_health_cache
+                return HealthCheck(
+                    name=cached.name,
+                    status=cached.status,
+                    message=f"{cached.message} (cached {int(cache_age)}s ago)",
+                    timestamp=cached.timestamp,
+                    details=cached.details
+                )
+
+        # Perform actual API check
+        result = self._perform_openai_api_check()
+
+        # Cache the result
+        HealthMonitor._api_health_cache = result
+        HealthMonitor._api_health_cache_time = time.time()
+
+        return result
+
+    def _perform_openai_api_check(self) -> HealthCheck:
+        """Actually perform the OpenAI/OpenRouter API check."""
         try:
             import os
             from openai import OpenAI
@@ -362,11 +399,11 @@ class HealthMonitor:
                     timestamp=datetime.utcnow().isoformat()
                 )
 
-            # Try a simple API call
+            # Try a simple API call with timeout and no retries
             if base_url:
-                client = OpenAI(api_key=api_key, base_url=base_url)
+                client = OpenAI(api_key=api_key, base_url=base_url, timeout=10.0, max_retries=0)
             else:
-                client = OpenAI(api_key=api_key)
+                client = OpenAI(api_key=api_key, timeout=10.0, max_retries=0)
 
             # Test with a minimal completion
             start_time = time.time()
@@ -390,11 +427,12 @@ class HealthMonitor:
             )
 
         except Exception as e:
+            import os
             service_name = "OpenRouter" if os.getenv("USE_OPENROUTER", "false").lower() == "true" else "OpenAI"
             error_msg = str(e)
 
             # Rate limits mean the API is working, just busy
-            if "429" in error_msg or "rate_limit" in error_msg.lower():
+            if "429" in error_msg or "rate_limit" in error_msg.lower() or "too many requests" in error_msg.lower():
                 return HealthCheck(
                     name="openai_api",
                     status=HealthStatus.WARNING,
@@ -409,6 +447,15 @@ class HealthMonitor:
                     name="openai_api",
                     status=HealthStatus.CRITICAL,
                     message=f"{service_name} API authentication failed",
+                    timestamp=datetime.utcnow().isoformat()
+                )
+
+            # Timeout is a warning, not critical
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                return HealthCheck(
+                    name="openai_api",
+                    status=HealthStatus.WARNING,
+                    message=f"{service_name} API slow/timeout",
                     timestamp=datetime.utcnow().isoformat()
                 )
 
