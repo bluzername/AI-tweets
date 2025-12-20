@@ -258,7 +258,7 @@ class ViralHookGenerator:
 class ThreadBuilder:
     """Builds engaging tweet threads from insights."""
 
-    def __init__(self, openai_api_key: str, model: str = "gpt-4", base_url: str = None):
+    def __init__(self, openai_api_key: str, model: str = "deepseek/deepseek-chat", base_url: str = None):
         """Initialize thread builder."""
         if base_url:
             self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)
@@ -655,8 +655,8 @@ class PollGenerator:
 
 class ViralTweetCrafter:
     """Main tweet crafting engine that creates viral content across formats."""
-    
-    def __init__(self, openai_api_key: str, model: str = "gpt-4", base_url: str = None):
+
+    def __init__(self, openai_api_key: str, model: str = "deepseek/deepseek-chat", base_url: str = None):
         """Initialize viral tweet crafter."""
         if base_url:
             self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)

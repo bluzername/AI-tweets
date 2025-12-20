@@ -130,7 +130,7 @@ class ViralInsight:
 class ViralContentAnalyzer:
     """Analyzes content for viral potential using multiple AI techniques."""
     
-    def __init__(self, openai_api_key: str, model: str = "gpt-4", base_url: str = None):
+    def __init__(self, openai_api_key: str, model: str = "deepseek/deepseek-chat", base_url: str = None):
         """Initialize viral content analyzer."""
         if base_url:
             self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)

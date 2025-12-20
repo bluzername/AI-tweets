@@ -82,7 +82,7 @@
   "ai_models": {
     "transcription": "whisper-1",
     "analysis": {
-      "enabled_models": ["gpt-4-turbo-preview", "claude-3-sonnet", "gemini-pro"],
+      "enabled_models": ["deepseek/deepseek-chat"],
       "consensus_threshold": 0.7
     }
   },
