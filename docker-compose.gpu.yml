@@ -79,7 +79,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./logs:/app/logs:ro
     depends_on:
       - podcasts-tldr
