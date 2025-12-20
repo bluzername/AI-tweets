@@ -301,6 +301,39 @@ def sync_metrics():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/api/test-api-connection', methods=['POST'])
+def test_api_connection():
+    """
+    Manually test OpenRouter/OpenAI API connection.
+
+    This is triggered by a button click, not automatic dashboard refresh,
+    to avoid unnecessary API costs.
+
+    Returns:
+        JSON with API health check result
+    """
+    try:
+        logger.info("Manual API connection test requested")
+
+        # Use the health monitor's API check
+        result = health_monitor.check_openai_api()
+
+        return jsonify({
+            'status': 'ok',
+            'check': {
+                'name': result.name,
+                'status': result.status.value,
+                'message': result.message,
+                'timestamp': result.timestamp,
+                'details': result.details
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to test API connection: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/api/sync-twitter-metrics', methods=['POST'])
 def sync_twitter_metrics():
     """
@@ -1852,6 +1885,10 @@ def create_dashboard_template():
                 <div id="health-checks">
                     <div class="loading">Loading...</div>
                 </div>
+                <button onclick="testApiConnection()" style="margin-top: 15px; background: #10b981;">
+                    🔌 Test API Connection
+                </button>
+                <div id="api-test-result" style="margin-top: 10px; display: none;"></div>
             </div>
 
             <div class="card">
@@ -2362,6 +2399,44 @@ def create_dashboard_template():
                 }
             } catch (error) {
                 alert('❌ Error syncing metrics: ' + error.message);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }
+        }
+
+        async function testApiConnection() {
+            const button = event.target;
+            const originalText = button.innerHTML;
+            const resultDiv = document.getElementById('api-test-result');
+            button.disabled = true;
+            button.innerHTML = '⏳ Testing...';
+            resultDiv.style.display = 'none';
+
+            try {
+                const result = await fetch('/api/test-api-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                }).then(r => r.json());
+
+                resultDiv.style.display = 'block';
+                if (result.status === 'ok') {
+                    const check = result.check;
+                    const statusColor = check.status === 'healthy' ? '#10b981' :
+                                       check.status === 'warning' ? '#f59e0b' : '#ef4444';
+                    resultDiv.innerHTML = '<div style="padding: 10px; border-radius: 8px; background: ' + statusColor + '20; border: 1px solid ' + statusColor + ';">' +
+                        '<strong style="color: ' + statusColor + ';">' + check.status.toUpperCase() + '</strong>: ' + check.message +
+                        '</div>';
+                } else {
+                    resultDiv.innerHTML = '<div style="padding: 10px; border-radius: 8px; background: #ef444420; border: 1px solid #ef4444;">' +
+                        '<strong style="color: #ef4444;">ERROR</strong>: ' + result.message +
+                        '</div>';
+                }
+            } catch (error) {
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = '<div style="padding: 10px; border-radius: 8px; background: #ef444420; border: 1px solid #ef4444;">' +
+                    '<strong style="color: #ef4444;">ERROR</strong>: ' + error.message +
+                    '</div>';
             } finally {
                 button.disabled = false;
                 button.innerHTML = originalText;

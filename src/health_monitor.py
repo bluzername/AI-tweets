@@ -101,12 +101,13 @@ class HealthMonitor:
         """
         checks = []
 
-        # Run all checks
+        # Run all checks (excluding API check - use check_openai_api() separately via button)
         checks.append(self.check_disk_space())
         checks.append(self.check_memory())
         checks.append(self.check_cpu())
         checks.append(self.check_databases())
-        checks.append(self.check_openai_api())
+        # NOTE: API check removed from automatic checks to save costs
+        # Use /api/test-api-connection endpoint for manual testing
         checks.append(self.check_directory_structure())
         checks.append(self.check_log_files())
 
