@@ -273,6 +273,16 @@ class ThreadQueue:
             thread_id if successful, None otherwise
         """
         try:
+            # DEDUPLICATION CHECK: Prevent duplicate threads for the same episode
+            if episode_id:
+                existing = self._check_existing_thread(account_name, episode_id)
+                if existing:
+                    logger.warning(
+                        f"Thread already exists for episode {episode_id} on account {account_name} "
+                        f"(thread_id: {existing}, status: scheduled/posted). Skipping duplicate."
+                    )
+                    return None
+
             thread_id = f"{account_name}_{episode_id}_{int(datetime.now().timestamp())}"
 
             if scheduled_time is None:
@@ -353,6 +363,34 @@ class ThreadQueue:
 
         # Default to insight
         return 'insight'
+
+    def _check_existing_thread(self, account_name: str, episode_id: str) -> Optional[str]:
+        """
+        Check if a thread already exists for this episode and account.
+
+        Args:
+            account_name: The X.com account name
+            episode_id: The episode ID to check
+
+        Returns:
+            thread_id if exists (and is scheduled or posted), None otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT thread_id FROM thread_queue
+                    WHERE account_name = ? AND episode_id = ?
+                    AND status IN ('scheduled', 'posted')
+                    LIMIT 1
+                    """,
+                    (account_name, episode_id)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            logger.error(f"Error checking existing thread: {e}")
+            return None
 
     def get_ready_threads(self, account_name: str = None) -> List[Dict]:
         """Get threads ready for posting."""
@@ -770,6 +808,7 @@ class ViralScheduler:
             tweets = thread_record['tweets']
             thumbnail_path = thread_record.get('thumbnail_path')
             tweet_ids = []
+            failed_indices = []  # Track which tweets failed
 
             logger.info(f"Posting thread {thread_record['thread_id']} ({len(tweets)} tweets)")
 
@@ -787,11 +826,16 @@ class ViralScheduler:
                         else:
                             response = client.create_tweet(text=tweet_text)
                     else:
-                        # Reply to previous tweet
-                        response = client.create_tweet(
-                            text=tweet_text,
-                            in_reply_to_tweet_id=tweet_ids[-1]
-                        )
+                        # Reply to previous tweet (only if we have a previous tweet ID)
+                        if tweet_ids:
+                            response = client.create_tweet(
+                                text=tweet_text,
+                                in_reply_to_tweet_id=tweet_ids[-1]
+                            )
+                        else:
+                            # If first tweet failed, try posting this as a new thread start
+                            logger.warning(f"No previous tweet ID, posting tweet {i+1} as standalone")
+                            response = client.create_tweet(text=tweet_text)
 
                     tweet_ids.append(response.data['id'])
                     logger.info(f"Posted tweet {i+1}/{len(tweets)}: {response.data['id']}")
@@ -802,27 +846,54 @@ class ViralScheduler:
 
                 except Exception as e:
                     logger.error(f"Error posting tweet {i+1} in thread: {e}")
-                    # Mark as failed but continue tracking what we posted
-                    self.thread_queue.update_thread_status(
-                        thread_record['thread_id'],
-                        'failed',
-                        first_tweet_id=tweet_ids[0] if tweet_ids else None,
-                        all_tweet_ids=json.dumps(tweet_ids) if tweet_ids else None,
-                        posted_time=datetime.now().isoformat()
-                    )
-                    return False
+                    failed_indices.append(i)
+                    tweet_ids.append(None)  # Placeholder to maintain index alignment
 
-            # All tweets posted successfully
+                    # If first tweet fails, we can't continue the thread properly
+                    if i == 0:
+                        logger.error("First tweet failed - cannot create thread. Aborting.")
+                        self.thread_queue.update_thread_status(
+                            thread_record['thread_id'],
+                            'failed',
+                            posted_time=datetime.now().isoformat()
+                        )
+                        return False
+
+                    # For subsequent tweets, continue trying to post remaining tweets
+                    # (they won't be connected to the thread, but at least content goes out)
+                    logger.warning(f"Continuing with remaining tweets despite failure on tweet {i+1}")
+                    time.sleep(2)  # Extra delay after error
+
+            # Filter out None values (failed tweets)
+            successful_ids = [tid for tid in tweet_ids if tid is not None]
+
+            # Determine final status
+            if len(failed_indices) == 0:
+                # All tweets posted successfully
+                status = 'posted'
+                logger.info(f"Successfully posted complete thread {thread_record['thread_id']} - {len(successful_ids)} tweets")
+            elif len(successful_ids) > 0:
+                # Partial success - some tweets posted
+                status = 'partial'
+                logger.warning(
+                    f"Partially posted thread {thread_record['thread_id']} - "
+                    f"{len(successful_ids)}/{len(tweets)} tweets succeeded. "
+                    f"Failed indices: {failed_indices}"
+                )
+            else:
+                # Complete failure
+                status = 'failed'
+                logger.error(f"Failed to post any tweets in thread {thread_record['thread_id']}")
+
             self.thread_queue.update_thread_status(
                 thread_record['thread_id'],
-                'posted',
-                first_tweet_id=tweet_ids[0] if tweet_ids else None,
-                all_tweet_ids=json.dumps(tweet_ids) if tweet_ids else None,
+                status,
+                first_tweet_id=successful_ids[0] if successful_ids else None,
+                all_tweet_ids=json.dumps(successful_ids) if successful_ids else None,
                 posted_time=datetime.now().isoformat()
             )
 
-            logger.info(f"Successfully posted thread {thread_record['thread_id']} - {len(tweet_ids)} tweets: {tweet_ids}")
-            return True
+            return status == 'posted'
 
         except Exception as e:
             logger.error(f"Error posting thread {thread_record.get('thread_id')}: {e}")
