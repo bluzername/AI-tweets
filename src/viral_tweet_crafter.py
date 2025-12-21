@@ -34,6 +34,55 @@ PODCAST_ABBREVIATIONS = {
 }
 
 
+def smart_truncate(text: str, max_length: int = 280, suffix: str = "...") -> str:
+    """
+    Truncate text at word/sentence boundary to avoid cutting mid-word.
+
+    Args:
+        text: The text to truncate
+        max_length: Maximum length including suffix
+        suffix: String to append when truncating (default "...")
+
+    Returns:
+        Truncated text that ends at a natural boundary
+    """
+    if len(text) <= max_length:
+        return text
+
+    # Reserve space for suffix
+    target_length = max_length - len(suffix)
+
+    if target_length <= 0:
+        return suffix[:max_length]
+
+    # Try to find a sentence boundary first (., !, ?)
+    truncated = text[:target_length]
+
+    # Look for last sentence-ending punctuation
+    last_sentence_end = -1
+    for punct in ['. ', '! ', '? ', '.\n', '!\n', '?\n']:
+        pos = truncated.rfind(punct)
+        if pos > last_sentence_end:
+            last_sentence_end = pos + 1  # Include the punctuation
+
+    # If we found a sentence boundary in the last 40% of the text, use it
+    if last_sentence_end > target_length * 0.6:
+        return text[:last_sentence_end].rstrip()
+
+    # Otherwise, find the last word boundary (space)
+    last_space = truncated.rfind(' ')
+
+    if last_space > target_length * 0.7:
+        # Found a good word boundary
+        return text[:last_space].rstrip() + suffix
+    elif last_space > 0:
+        # Use whatever space we found
+        return text[:last_space].rstrip() + suffix
+    else:
+        # No space found, just truncate (rare edge case)
+        return truncated.rstrip() + suffix
+
+
 def get_podcast_display_name(podcast_name: str, max_length: int = 20) -> str:
     """
     Get a display-friendly podcast name for tweets.
@@ -445,10 +494,10 @@ Return as JSON object with format:
                             key_points, episode_title, podcast_name, handles_text
                         )
 
-                    # Check length
+                    # Check length and smart truncate if needed
                     if len(tweet) > 280:
-                        logger.warning(f"Tweet {i+1} exceeds 280 chars ({len(tweet)}), truncating")
-                        tweet = tweet[:277] + "..."
+                        logger.warning(f"Tweet {i+1} exceeds 280 chars ({len(tweet)}), smart truncating")
+                        tweet = smart_truncate(tweet, max_length=280, suffix="...")
 
                     validated_thread.append(tweet.strip())
 
@@ -463,7 +512,7 @@ Return as JSON object with format:
                         validated_thread[0] = f"{podcast_display} 🎙️ {first_tweet}"
                     # Re-check length after modification
                     if len(validated_thread[0]) > 280:
-                        validated_thread[0] = validated_thread[0][:277] + "..."
+                        validated_thread[0] = smart_truncate(validated_thread[0], max_length=280, suffix="...")
                     logger.debug(f"Prepended podcast name to first tweet: {podcast_display}")
 
                 console.print(f"[dim]  ✓ Created thread with {len(validated_thread)} tweets[/dim]")
@@ -505,15 +554,15 @@ Return as JSON object with format:
 
         # Tweet 1: Attribution with podcast name prefix and episode number
         ep_prefix = f"[Ep {episode_number}] " if episode_number else ""
-        thread.append(
-            f"{podcast_display} 🎙️ {ep_prefix}Key insights from {handles_text} on {episode_title[:80]}..."
-        )
+        first_tweet = f"{podcast_display} 🎙️ {ep_prefix}Key insights from {handles_text} on {episode_title}"
+        thread.append(smart_truncate(first_tweet, max_length=280, suffix="..."))
 
         # Tweets 2-6: Key points
         emoji_numbers = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
         for i, point in enumerate(key_points[:5]):
-            tweet = f"{emoji_numbers[i]} {point.text[:270]}"
-            thread.append(tweet)
+            point_text = point.text if hasattr(point, 'text') else str(point)
+            tweet = f"{emoji_numbers[i]} {point_text}"
+            thread.append(smart_truncate(tweet, max_length=280, suffix="..."))
 
         return thread
     
@@ -742,7 +791,7 @@ class ViralTweetCrafter:
         # Main content
         text = insight.text
         if len(text) > 200:
-            text = text[:197] + "..."
+            text = smart_truncate(text, max_length=200, suffix="...")
         
         # Build tweet components
         content_options = []
@@ -859,7 +908,7 @@ class ViralTweetCrafter:
         # Prepare quote text (limit for visual readability)
         quote_text = insight.text
         if len(quote_text) > 180:
-            quote_text = quote_text[:177] + "..."
+            quote_text = smart_truncate(quote_text, max_length=180, suffix="...")
         
         # Determine quote author
         author = insight.speaker or "Podcast Guest"
