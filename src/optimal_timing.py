@@ -37,10 +37,12 @@ class OptimalTimingAnalyzer:
     """
 
     # Research-based optimal times for tech/podcast audiences (US Eastern)
+    # 8 slots per day to maximize Twitter Basic tier limit (~50 tweets/day = ~8 threads)
     DEFAULT_OPTIMAL_TIMES = {
         'weekday': [
             {'hour': 8, 'minute': 0, 'score': 0.7, 'reason': 'Morning commute (East Coast)'},
             {'hour': 9, 'minute': 30, 'score': 0.8, 'reason': 'Work start break'},
+            {'hour': 10, 'minute': 30, 'score': 0.75, 'reason': 'Mid-morning break'},
             {'hour': 12, 'minute': 0, 'score': 0.9, 'reason': 'Lunch break peak'},
             {'hour': 15, 'minute': 0, 'score': 0.7, 'reason': 'Afternoon break'},
             {'hour': 17, 'minute': 30, 'score': 0.85, 'reason': 'End of workday'},
@@ -49,8 +51,11 @@ class OptimalTimingAnalyzer:
         ],
         'weekend': [
             {'hour': 9, 'minute': 0, 'score': 0.7, 'reason': 'Weekend morning'},
+            {'hour': 10, 'minute': 0, 'score': 0.75, 'reason': 'Late breakfast scroll'},
             {'hour': 11, 'minute': 0, 'score': 0.85, 'reason': 'Late morning leisure'},
+            {'hour': 13, 'minute': 0, 'score': 0.8, 'reason': 'Early afternoon'},
             {'hour': 14, 'minute': 0, 'score': 0.9, 'reason': 'Afternoon peak'},
+            {'hour': 16, 'minute': 0, 'score': 0.75, 'reason': 'Pre-dinner scroll'},
             {'hour': 17, 'minute': 0, 'score': 0.8, 'reason': 'Early evening'},
             {'hour': 20, 'minute': 0, 'score': 0.85, 'reason': 'Evening leisure'},
         ]
