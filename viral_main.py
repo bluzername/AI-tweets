@@ -41,6 +41,11 @@ from src.error_handling import (
     get_circuit_breaker, ResilientPipeline
 )
 
+# Import fact-check pipeline components
+from src.claim_extractor import ClaimExtractor
+from src.fact_checker import FactChecker
+from src.debunk_thread_generator import DebunkThreadGenerator, DebunkThreadConfig
+
 # Initialize Rich console
 console = Console()
 
@@ -266,7 +271,198 @@ class PodcastsTLDRPipeline:
             x_accounts=self.config["x_accounts"],
             posting_frequency=self.config["posting_frequency"]
         )
-    
+
+        # 6. Fact-Check Pipeline (PodDebunker)
+        self._init_factcheck_pipeline(api_key)
+
+    def _init_factcheck_pipeline(self, openrouter_api_key: str):
+        """Initialize fact-check pipeline components for PodDebunker."""
+        # Check if fact-check is enabled
+        self.factcheck_enabled = os.getenv("FACTCHECK_ENABLED", "true").lower() == "true"
+
+        if not self.factcheck_enabled:
+            logger.info("Fact-check pipeline disabled (FACTCHECK_ENABLED=false)")
+            self.claim_extractor = None
+            self.fact_checker = None
+            self.debunk_generator = None
+            return
+
+        # Get fact-check config from environment
+        min_false_claims = int(os.getenv("FACTCHECK_MIN_FALSE_CLAIMS", "2"))
+        llm_confidence_threshold = float(os.getenv("FACTCHECK_LLM_CONFIDENCE_THRESHOLD", "0.90"))
+        checkworthy_threshold = float(os.getenv("FACTCHECK_CHECKWORTHY_THRESHOLD", "0.5"))
+        google_factcheck_api_key = os.getenv("GOOGLE_FACTCHECK_API_KEY")
+
+        try:
+            # Initialize claim extractor
+            self.claim_extractor = ClaimExtractor(
+                openrouter_api_key=openrouter_api_key,
+                checkworthy_threshold=checkworthy_threshold
+            )
+            logger.info("✅ Claim extractor initialized")
+
+            # Initialize fact checker
+            self.fact_checker = FactChecker(
+                google_api_key=google_factcheck_api_key,
+                openrouter_api_key=openrouter_api_key,
+                confidence_threshold=llm_confidence_threshold,
+                checkworthy_threshold=checkworthy_threshold
+            )
+            logger.info("✅ Fact checker initialized")
+
+            # Initialize debunk thread generator
+            self.debunk_generator = DebunkThreadGenerator(
+                config=DebunkThreadConfig(
+                    min_false_claims=min_false_claims,
+                    include_misleading=True
+                )
+            )
+            logger.info("✅ Debunk thread generator initialized")
+
+            # Check for PodDebunker account credentials
+            poddebunker_key = os.getenv("PODDEBUNKER_API_KEY")
+            if poddebunker_key:
+                # Add PodDebunker account to scheduler's x_accounts
+                self.config["x_accounts"]["poddebunker"] = {
+                    "consumer_key": poddebunker_key,
+                    "consumer_secret": os.getenv("PODDEBUNKER_API_SECRET", ""),
+                    "access_token": os.getenv("PODDEBUNKER_ACCESS_TOKEN", ""),
+                    "access_token_secret": os.getenv("PODDEBUNKER_ACCESS_TOKEN_SECRET", ""),
+                    "bearer_token": os.getenv("PODDEBUNKER_BEARER_TOKEN", "")
+                }
+                # Reinitialize scheduler with updated accounts
+                self.scheduler = ViralScheduler(
+                    x_accounts=self.config["x_accounts"],
+                    posting_frequency=self.config["posting_frequency"]
+                )
+                logger.info("✅ PodDebunker account configured for fact-check threads")
+            else:
+                logger.warning("⚠️ PODDEBUNKER_API_KEY not set - debunk threads will save to markdown")
+
+            logger.info(f"✅ Fact-check pipeline ready (min_false_claims={min_false_claims})")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize fact-check pipeline: {e}")
+            self.factcheck_enabled = False
+            self.claim_extractor = None
+            self.fact_checker = None
+            self.debunk_generator = None
+
+    def _run_factcheck_for_episode(
+        self,
+        episode,
+        transcription_text: str,
+        podcast_handle: str,
+        host_handles: List[str],
+        overall_progress
+    ) -> int:
+        """
+        Run fact-check pipeline for a single episode.
+
+        Returns:
+            Number of debunk tweets scheduled (0 if no false claims found)
+        """
+        step_task = overall_progress.add_task(
+            f"[yellow]  → Extracting factual claims",
+            total=100
+        )
+
+        try:
+            # Extract factual claims from transcription
+            overall_progress.update(step_task, advance=20)
+            extracted = self.claim_extractor.extract_all(
+                transcription=transcription_text,
+                podcast_name=episode.podcast_name,
+                episode_title=episode.title,
+                max_insights=0,  # We already extracted insights for TLDR
+                max_claims=10
+            )
+            factual_claims = extracted.factual_claims
+
+            if not factual_claims:
+                overall_progress.remove_task(step_task)
+                console.print("[dim]  ℹ No verifiable claims found[/dim]")
+                return 0
+
+            overall_progress.update(step_task, advance=30)
+            console.print(f"[green]  ✓ Found {len(factual_claims)} factual claims[/green]")
+
+            # Verify claims with fact checker
+            overall_progress.update(step_task, description="[yellow]  → Verifying claims")
+            fact_check_results = self.fact_checker.check_claims(factual_claims)
+            overall_progress.update(step_task, advance=30)
+
+            # Filter to false/misleading claims
+            false_claims = [r for r in fact_check_results if r.is_false_or_misleading]
+
+            if not false_claims:
+                overall_progress.remove_task(step_task)
+                console.print("[dim]  ℹ No false claims found - episode fact-checked clean[/dim]")
+                return 0
+
+            console.print(f"[yellow]  ⚠ Found {len(false_claims)} false/misleading claims[/yellow]")
+
+            # Check if we should generate a debunk thread
+            if not self.debunk_generator.should_publish(false_claims):
+                overall_progress.remove_task(step_task)
+                min_required = int(os.getenv("FACTCHECK_MIN_FALSE_CLAIMS", "2"))
+                console.print(f"[dim]  ℹ Insufficient false claims ({len(false_claims)}/{min_required} required)[/dim]")
+                return 0
+
+            # Generate debunk thread
+            overall_progress.update(step_task, description="[yellow]  → Generating debunk thread")
+            debunk_thread = self.debunk_generator.generate_thread(
+                podcast_name=episode.podcast_name,
+                episode_title=episode.title,
+                false_claims=false_claims,
+                podcast_artwork_url=episode.artwork_url
+            )
+
+            if not debunk_thread:
+                overall_progress.remove_task(step_task)
+                console.print("[yellow]  ⚠ Failed to generate debunk thread[/yellow]")
+                return 0
+
+            overall_progress.update(step_task, advance=20)
+
+            # Schedule debunk thread to PodDebunker account
+            if "poddebunker" in self.config["x_accounts"]:
+                # Convert Tweet objects to strings for scheduler
+                thread_texts = [tweet.content for tweet in debunk_thread]
+                thumbnail_path = debunk_thread[0].media_url if debunk_thread[0].has_media else None
+
+                thread_id = self.scheduler.schedule_thread(
+                    thread_tweets=thread_texts,
+                    account_name="poddebunker",
+                    podcast_name=episode.podcast_name,
+                    podcast_handle=podcast_handle,
+                    host_handles=host_handles,
+                    guest_handles=[],
+                    episode_id=episode.episode_id,
+                    episode_title=f"[FACT CHECK] {episode.title}",
+                    thumbnail_path=thumbnail_path,
+                    scheduled_time=None  # Will use optimal time
+                )
+
+                if thread_id:
+                    overall_progress.remove_task(step_task)
+                    console.print(f"[bold magenta]  ✓ Scheduled {len(debunk_thread)}-tweet debunk thread to @PodDebunker[/bold magenta]")
+                    return len(debunk_thread)
+            else:
+                # Save to markdown fallback
+                overall_progress.remove_task(step_task)
+                console.print("[yellow]  ℹ PodDebunker account not configured - debunk saved to markdown[/yellow]")
+                return 0
+
+        except Exception as e:
+            try:
+                overall_progress.remove_task(step_task)
+            except Exception:
+                pass
+            raise
+
+        return 0
+
     def run_discovery(self) -> List[str]:
         """
         Run podcast discovery and return new episode IDs.
@@ -599,11 +795,26 @@ class PodcastsTLDRPipeline:
                     overall_progress.remove_task(step_task)
                     console.print(f"[green]  ✓ Scheduled 6-tweet thread[/green]")
 
+                    # Step 8: Fact-Check Pipeline (PodDebunker)
+                    debunk_tweets_scheduled = 0
+                    if self.factcheck_enabled and self.claim_extractor and transcription:
+                        try:
+                            debunk_tweets_scheduled = self._run_factcheck_for_episode(
+                                episode=episode,
+                                transcription_text=transcription.text,
+                                podcast_handle=podcast_handle,
+                                host_handles=host_handles,
+                                overall_progress=overall_progress
+                            )
+                        except Exception as fc_error:
+                            logger.warning(f"Fact-check pipeline error (non-fatal): {fc_error}")
+                            console.print(f"[yellow]  ⚠ Fact-check skipped: {str(fc_error)[:50]}...[/yellow]")
+
                     # Mark episode as completed
                     self.ingestor.mark_episode_completed(
                         episode.episode_id,
                         insights_count=len(key_points),
-                        tweets_generated=6  # Always 6 tweets per episode
+                        tweets_generated=6 + debunk_tweets_scheduled  # TLDR + any debunk tweets
                     )
 
                     processed_count += 1
