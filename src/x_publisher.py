@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import tweepy
 from .thread_generator import Tweet
+from .config import AccountType, AccountConfig
 
 logger = logging.getLogger(__name__)
 
@@ -296,16 +297,17 @@ class XPublisher:
 
 class MultiAccountPublisher:
     """Manages publishing to multiple X.com accounts."""
-    
+
     def __init__(self, accounts_config: Dict[str, Dict[str, Any]]):
         """
         Initialize multi-account publisher.
-        
+
         Args:
             accounts_config: Dictionary of account configurations
         """
         self.publishers = {}
-        
+        self.account_types = {}  # Map account names to types
+
         for account_name, config in accounts_config.items():
             self.publishers[account_name] = XPublisher(
                 api_key=config.get('api_key'),
@@ -315,7 +317,33 @@ class MultiAccountPublisher:
                 bearer_token=config.get('bearer_token'),
                 fallback_dir=config.get('fallback_dir', f"output/{account_name}")
             )
-            logger.info(f"Initialized publisher for account: {account_name}")
+
+            # Infer account type from name
+            if 'debunk' in account_name.lower() or account_name.lower() == 'poddebunker':
+                self.account_types[account_name] = AccountType.DEBUNKER
+            elif account_name.lower() == 'casual':
+                self.account_types[account_name] = AccountType.CASUAL
+            else:
+                self.account_types[account_name] = AccountType.SUMMARY
+
+            logger.info(f"Initialized publisher for account: {account_name} (type: {self.account_types[account_name].value})")
+
+    @classmethod
+    def from_config_accounts(cls, accounts: Dict[str, 'AccountConfig']) -> 'MultiAccountPublisher':
+        """
+        Create MultiAccountPublisher from Config.accounts dictionary.
+
+        Args:
+            accounts: Dictionary of AccountConfig objects from Config
+
+        Returns:
+            Initialized MultiAccountPublisher
+        """
+        accounts_config = {}
+        for name, account in accounts.items():
+            accounts_config[name] = account.get_credentials()
+            accounts_config[name]['fallback_dir'] = f"output/{name}"
+        return cls(accounts_config)
     
     def publish_to_account(
         self,
@@ -348,7 +376,48 @@ class MultiAccountPublisher:
         return self.publishers[account_name].publish_thread(
             thread, podcast_name, episode_title, account_name, dry_run
         )
-    
+
+    def publish_by_type(
+        self,
+        account_type: AccountType,
+        thread: List[Tweet],
+        podcast_name: str,
+        episode_title: str,
+        dry_run: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Publish thread to an account by its type.
+
+        Args:
+            account_type: Type of account to publish to
+            thread: Thread to publish
+            podcast_name: Podcast name
+            episode_title: Episode title
+            dry_run: If True, don't actually post
+
+        Returns:
+            Publish status
+        """
+        # Find account with matching type
+        for account_name, acct_type in self.account_types.items():
+            if acct_type == account_type:
+                return self.publish_to_account(
+                    account_name, thread, podcast_name, episode_title, dry_run
+                )
+
+        logger.error(f"No account configured for type: {account_type.value}")
+        return {
+            "status": "error",
+            "message": f"No account configured for type {account_type.value}"
+        }
+
+    def get_account_name_by_type(self, account_type: AccountType) -> Optional[str]:
+        """Get account name for a given type."""
+        for account_name, acct_type in self.account_types.items():
+            if acct_type == account_type:
+                return account_name
+        return None
+
     def publish_to_all(
         self,
         threads: Dict[str, List[Tweet]],
