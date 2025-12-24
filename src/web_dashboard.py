@@ -1523,6 +1523,183 @@ def api_health():
         return jsonify({'status': 'unhealthy', 'error': str(e)}), 503
 
 
+@app.route('/api/factcheck/overview')
+def api_factcheck_overview():
+    """Get fact-check pipeline overview statistics."""
+    try:
+        db_path = Path("data/factcheck_results.db")
+        if not db_path.exists():
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    'total_runs': 0,
+                    'total_claims': 0,
+                    'false_claims': 0,
+                    'misleading_claims': 0,
+                    'true_claims': 0,
+                    'debunk_threads_scheduled': 0,
+                    'recent_runs': []
+                }
+            })
+
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        # Get summary stats
+        cursor.execute("SELECT COUNT(*) FROM factcheck_runs")
+        total_runs = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM factcheck_claims")
+        total_claims = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM factcheck_claims WHERE verdict = 'false'")
+        false_claims = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM factcheck_claims WHERE verdict = 'misleading'")
+        misleading_claims = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM factcheck_claims WHERE verdict = 'true'")
+        true_claims = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM factcheck_runs WHERE debunk_thread_scheduled = 1")
+        debunk_scheduled = cursor.fetchone()[0]
+
+        # Get recent runs
+        cursor.execute('''
+            SELECT podcast_name, episode_title, total_claims_extracted,
+                   false_claims_found, misleading_claims_found, debunk_thread_scheduled,
+                   created_at
+            FROM factcheck_runs
+            ORDER BY created_at DESC
+            LIMIT 10
+        ''')
+        recent_runs = []
+        for row in cursor.fetchall():
+            recent_runs.append({
+                'podcast_name': row[0],
+                'episode_title': row[1],
+                'total_claims': row[2],
+                'false_claims': row[3],
+                'misleading_claims': row[4],
+                'debunk_scheduled': row[5] == 1,
+                'created_at': row[6]
+            })
+
+        conn.close()
+
+        return jsonify({
+            'status': 'success',
+            'data': {
+                'total_runs': total_runs,
+                'total_claims': total_claims,
+                'false_claims': false_claims,
+                'misleading_claims': misleading_claims,
+                'true_claims': true_claims,
+                'debunk_threads_scheduled': debunk_scheduled,
+                'recent_runs': recent_runs
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error getting factcheck overview: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/factcheck/claims')
+def api_factcheck_claims():
+    """Get detailed fact-check claims with filtering."""
+    try:
+        verdict_filter = request.args.get('verdict', None)  # false, misleading, true, unverified
+        limit = min(int(request.args.get('limit', 50)), 200)
+
+        db_path = Path("data/factcheck_results.db")
+        if not db_path.exists():
+            return jsonify({'status': 'success', 'data': {'claims': []}})
+
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        query = '''
+            SELECT c.claim_text, c.verdict, c.correction, c.source_name, c.source_url,
+                   c.confidence, c.method_used, c.created_at, r.podcast_name, r.episode_title
+            FROM factcheck_claims c
+            JOIN factcheck_runs r ON c.run_id = r.id
+        '''
+
+        params = []
+        if verdict_filter:
+            query += " WHERE c.verdict = ?"
+            params.append(verdict_filter)
+
+        query += " ORDER BY c.created_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(query, params)
+        claims = []
+        for row in cursor.fetchall():
+            claims.append({
+                'claim_text': row[0],
+                'verdict': row[1],
+                'correction': row[2],
+                'source_name': row[3],
+                'source_url': row[4],
+                'confidence': row[5],
+                'method_used': row[6],
+                'created_at': row[7],
+                'podcast_name': row[8],
+                'episode_title': row[9]
+            })
+
+        conn.close()
+
+        return jsonify({'status': 'success', 'data': {'claims': claims}})
+
+    except Exception as e:
+        logger.error(f"Error getting factcheck claims: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/factcheck/debunk-threads')
+def api_factcheck_debunk_threads():
+    """Get PodDebunker threads from queue."""
+    try:
+        db_path = Path("data/thread_queue.db")
+        if not db_path.exists():
+            return jsonify({'status': 'success', 'data': {'threads': []}})
+
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT thread_id, podcast_name, episode_title, status,
+                   scheduled_time, posted_time, created_at
+            FROM thread_queue
+            WHERE account_name = 'poddebunker'
+            ORDER BY created_at DESC
+            LIMIT 20
+        ''')
+
+        threads = []
+        for row in cursor.fetchall():
+            threads.append({
+                'thread_id': row[0],
+                'podcast_name': row[1],
+                'episode_title': row[2],
+                'status': row[3],
+                'scheduled_time': row[4],
+                'posted_time': row[5],
+                'created_at': row[6]
+            })
+
+        conn.close()
+
+        return jsonify({'status': 'success', 'data': {'threads': threads}})
+
+    except Exception as e:
+        logger.error(f"Error getting debunk threads: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 # Template creation helper
 def create_dashboard_template():
     """Create the dashboard HTML template."""
@@ -1846,6 +2023,7 @@ def create_dashboard_template():
             <p class="subtitle">Autonomous Content Machine - Real-time Monitoring & Control</p>
             <div class="tab-nav" style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
                 <button class="tab-btn active" onclick="showTab('dashboard')">📊 Dashboard</button>
+                <button class="tab-btn" onclick="showTab('factcheck')">🔍 Fact-Check</button>
                 <button class="tab-btn" onclick="showTab('analytics')">📈 Analytics</button>
                 <button class="tab-btn" onclick="showTab('threads')">🧵 Posted Threads</button>
             </div>
@@ -1930,6 +2108,39 @@ def create_dashboard_template():
             </button>
         </div>
         </div> <!-- End Dashboard Tab -->
+
+        <!-- Fact-Check Tab -->
+        <div id="tab-factcheck" class="tab-content" style="display: none;">
+            <div class="grid">
+                <div class="card">
+                    <h2>🔍 Fact-Check Overview</h2>
+                    <div id="factcheck-overview">
+                        <div class="loading">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h2>🎯 PodDebunker Threads</h2>
+                    <div id="debunk-threads">
+                        <div class="loading">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>📋 Recent Fact-Check Runs</h2>
+                <div id="factcheck-runs">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>⚠️ False/Misleading Claims Found</h2>
+                <div id="factcheck-claims">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div> <!-- End Fact-Check Tab -->
 
         <!-- Analytics Tab -->
         <div id="tab-analytics" class="tab-content" style="display: none;">
@@ -2488,6 +2699,8 @@ def create_dashboard_template():
                 loadAnalytics();
             } else if (tabName === 'threads') {
                 loadPostedThreads();
+            } else if (tabName === 'factcheck') {
+                loadFactcheck();
             }
         }
 
@@ -2513,6 +2726,137 @@ def create_dashboard_template():
             } catch (error) {
                 console.error('Failed to load analytics:', error);
             }
+        }
+
+        // Load Fact-Check Data
+        async function loadFactcheck() {
+            try {
+                // Fetch overview
+                const overview = await fetch('/api/factcheck/overview').then(r => r.json());
+                updateFactcheckOverview(overview.data);
+
+                // Fetch debunk threads
+                const threads = await fetch('/api/factcheck/debunk-threads').then(r => r.json());
+                updateDebunkThreads(threads.data);
+
+                // Fetch false/misleading claims
+                const claims = await fetch('/api/factcheck/claims?verdict=false&limit=20').then(r => r.json());
+                const misleading = await fetch('/api/factcheck/claims?verdict=misleading&limit=20').then(r => r.json());
+                updateFactcheckClaims([...claims.data.claims, ...misleading.data.claims]);
+
+            } catch (error) {
+                console.error('Failed to load factcheck data:', error);
+            }
+        }
+
+        function updateFactcheckOverview(data) {
+            const container = document.getElementById('factcheck-overview');
+            if (!data) {
+                container.innerHTML = '<div class="loading">No data available</div>';
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="metric">
+                    <div class="metric-label">Episodes Fact-Checked</div>
+                    <div class="metric-value">${data.total_runs || 0}</div>
+                </div>
+                <div class="metric">
+                    <div class="metric-label">Total Claims Verified</div>
+                    <div class="metric-value">${data.total_claims || 0}</div>
+                </div>
+                <div class="metric" style="border-left-color: #ef4444;">
+                    <div class="metric-label">False Claims Found</div>
+                    <div class="metric-value" style="color: #ef4444;">${data.false_claims || 0}</div>
+                </div>
+                <div class="metric" style="border-left-color: #f59e0b;">
+                    <div class="metric-label">Misleading Claims</div>
+                    <div class="metric-value" style="color: #f59e0b;">${data.misleading_claims || 0}</div>
+                </div>
+                <div class="metric" style="border-left-color: #10b981;">
+                    <div class="metric-label">Debunk Threads Scheduled</div>
+                    <div class="metric-value" style="color: #10b981;">${data.debunk_threads_scheduled || 0}</div>
+                </div>
+            `;
+
+            // Update runs list
+            const runsContainer = document.getElementById('factcheck-runs');
+            if (data.recent_runs && data.recent_runs.length > 0) {
+                runsContainer.innerHTML = data.recent_runs.map(run => `
+                    <div class="health-check" style="border-left: 4px solid ${run.debunk_scheduled ? '#10b981' : '#64748b'};">
+                        <div style="flex: 1;">
+                            <div style="font-weight: 600;">${run.podcast_name}</div>
+                            <div style="font-size: 0.85em; color: #94a3b8;">${run.episode_title?.substring(0, 50)}...</div>
+                            <div style="font-size: 0.8em; color: #64748b; margin-top: 4px;">
+                                ${run.total_claims} claims checked •
+                                <span style="color: #ef4444;">${run.false_claims} false</span> •
+                                <span style="color: #f59e0b;">${run.misleading_claims} misleading</span>
+                                ${run.debunk_scheduled ? ' • <span style="color: #10b981;">Debunk scheduled</span>' : ''}
+                            </div>
+                        </div>
+                        <div style="text-align: right; font-size: 0.75em; color: #64748b;">
+                            ${new Date(run.created_at).toLocaleString()}
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                runsContainer.innerHTML = '<div class="loading">No fact-check runs yet. New episodes will be fact-checked automatically.</div>';
+            }
+        }
+
+        function updateDebunkThreads(data) {
+            const container = document.getElementById('debunk-threads');
+            if (!data || !data.threads || data.threads.length === 0) {
+                container.innerHTML = '<div class="loading">No PodDebunker threads yet</div>';
+                return;
+            }
+
+            container.innerHTML = data.threads.map(thread => {
+                const statusColor = thread.status === 'posted' ? '#10b981' :
+                                   thread.status === 'scheduled' ? '#3b82f6' : '#f59e0b';
+                return `
+                    <div class="health-check" style="border-left: 4px solid ${statusColor};">
+                        <div style="flex: 1;">
+                            <div style="font-weight: 600;">${thread.podcast_name}</div>
+                            <div style="font-size: 0.85em; color: #94a3b8;">${thread.episode_title?.substring(0, 50)}...</div>
+                        </div>
+                        <div style="text-align: right;">
+                            <span class="status-badge" style="background: ${statusColor}; font-size: 0.7em;">${thread.status}</span>
+                            <div style="font-size: 0.75em; color: #64748b; margin-top: 4px;">
+                                ${thread.scheduled_time ? new Date(thread.scheduled_time).toLocaleString() : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateFactcheckClaims(claims) {
+            const container = document.getElementById('factcheck-claims');
+            if (!claims || claims.length === 0) {
+                container.innerHTML = '<div class="loading">No false/misleading claims found yet</div>';
+                return;
+            }
+
+            container.innerHTML = claims.slice(0, 10).map(claim => {
+                const verdictColor = claim.verdict === 'false' ? '#ef4444' : '#f59e0b';
+                return `
+                    <div class="health-check" style="border-left: 4px solid ${verdictColor}; margin-bottom: 8px;">
+                        <div style="flex: 1;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                                <span class="status-badge" style="background: ${verdictColor}; font-size: 0.7em;">${claim.verdict}</span>
+                                <span style="font-size: 0.8em; color: #64748b;">${claim.podcast_name}</span>
+                            </div>
+                            <div style="font-weight: 500;">"${claim.claim_text?.substring(0, 150)}..."</div>
+                            ${claim.correction ? `<div style="font-size: 0.85em; color: #10b981; margin-top: 4px;">✓ ${claim.correction.substring(0, 100)}...</div>` : ''}
+                            ${claim.source_name ? `<div style="font-size: 0.75em; color: #64748b; margin-top: 4px;">Source: ${claim.source_name}</div>` : ''}
+                        </div>
+                        <div style="text-align: right; font-size: 0.75em; color: #64748b;">
+                            ${(claim.confidence * 100).toFixed(0)}% confidence
+                        </div>
+                    </div>
+                `;
+            }).join('');
         }
 
         // Record follower count

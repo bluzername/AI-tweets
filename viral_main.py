@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import time
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
@@ -348,6 +349,116 @@ class PodcastsTLDRPipeline:
             self.fact_checker = None
             self.debunk_generator = None
 
+    def _init_factcheck_db(self):
+        """Initialize the fact-check results database."""
+        db_path = Path("data/factcheck_results.db")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
+
+        # Create tables for fact-check results
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factcheck_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                episode_id TEXT NOT NULL,
+                podcast_name TEXT,
+                episode_title TEXT,
+                total_claims_extracted INTEGER DEFAULT 0,
+                false_claims_found INTEGER DEFAULT 0,
+                misleading_claims_found INTEGER DEFAULT 0,
+                true_claims_found INTEGER DEFAULT 0,
+                unverified_claims_found INTEGER DEFAULT 0,
+                debunk_thread_scheduled INTEGER DEFAULT 0,
+                debunk_thread_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS factcheck_claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER,
+                episode_id TEXT,
+                claim_text TEXT NOT NULL,
+                claim_type TEXT,
+                verdict TEXT NOT NULL,
+                correction TEXT,
+                source_name TEXT,
+                source_url TEXT,
+                confidence REAL,
+                method_used TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (run_id) REFERENCES factcheck_runs(id)
+            )
+        ''')
+
+        conn.commit()
+        conn.close()
+
+    def _save_factcheck_results(
+        self,
+        episode_id: str,
+        podcast_name: str,
+        episode_title: str,
+        fact_check_results: List,
+        debunk_thread_id: str = None
+    ):
+        """Save fact-check results to database for monitoring."""
+        try:
+            self._init_factcheck_db()
+            db_path = Path("data/factcheck_results.db")
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+
+            # Count by verdict
+            false_count = sum(1 for r in fact_check_results if r.verdict.value == "false")
+            misleading_count = sum(1 for r in fact_check_results if r.verdict.value == "misleading")
+            true_count = sum(1 for r in fact_check_results if r.verdict.value == "true")
+            unverified_count = sum(1 for r in fact_check_results if r.verdict.value == "unverified")
+
+            # Insert run summary
+            cursor.execute('''
+                INSERT INTO factcheck_runs
+                (episode_id, podcast_name, episode_title, total_claims_extracted,
+                 false_claims_found, misleading_claims_found, true_claims_found,
+                 unverified_claims_found, debunk_thread_scheduled, debunk_thread_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                episode_id, podcast_name, episode_title,
+                len(fact_check_results), false_count, misleading_count,
+                true_count, unverified_count,
+                1 if debunk_thread_id else 0, debunk_thread_id
+            ))
+
+            run_id = cursor.lastrowid
+
+            # Insert individual claims
+            for result in fact_check_results:
+                cursor.execute('''
+                    INSERT INTO factcheck_claims
+                    (run_id, episode_id, claim_text, claim_type, verdict,
+                     correction, source_name, source_url, confidence, method_used)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    run_id, episode_id,
+                    result.original_claim.claim_text,
+                    result.original_claim.claim_type.value if result.original_claim.claim_type else None,
+                    result.verdict.value,
+                    result.correction,
+                    result.source_name,
+                    result.source_url,
+                    result.confidence,
+                    result.method_used
+                ))
+
+            conn.commit()
+            conn.close()
+            logger.info(f"Saved {len(fact_check_results)} fact-check results for episode {episode_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to save fact-check results: {e}")
+
     def _run_factcheck_for_episode(
         self,
         episode,
@@ -396,6 +507,13 @@ class PodcastsTLDRPipeline:
             false_claims = [r for r in fact_check_results if r.is_false_or_misleading]
 
             if not false_claims:
+                # Save results even when no false claims found (for monitoring)
+                self._save_factcheck_results(
+                    episode_id=episode.episode_id,
+                    podcast_name=episode.podcast_name,
+                    episode_title=episode.title,
+                    fact_check_results=fact_check_results
+                )
                 overall_progress.remove_task(step_task)
                 console.print("[dim]  ℹ No false claims found - episode fact-checked clean[/dim]")
                 return 0
@@ -404,6 +522,13 @@ class PodcastsTLDRPipeline:
 
             # Check if we should generate a debunk thread
             if not self.debunk_generator.should_publish(false_claims):
+                # Save results even when insufficient for debunk thread
+                self._save_factcheck_results(
+                    episode_id=episode.episode_id,
+                    podcast_name=episode.podcast_name,
+                    episode_title=episode.title,
+                    fact_check_results=fact_check_results
+                )
                 overall_progress.remove_task(step_task)
                 min_required = int(os.getenv("FACTCHECK_MIN_FALSE_CLAIMS", "2"))
                 console.print(f"[dim]  ℹ Insufficient false claims ({len(false_claims)}/{min_required} required)[/dim]")
@@ -445,6 +570,14 @@ class PodcastsTLDRPipeline:
                 )
 
                 if thread_id:
+                    # Save results with debunk thread ID
+                    self._save_factcheck_results(
+                        episode_id=episode.episode_id,
+                        podcast_name=episode.podcast_name,
+                        episode_title=episode.title,
+                        fact_check_results=fact_check_results,
+                        debunk_thread_id=thread_id
+                    )
                     overall_progress.remove_task(step_task)
                     console.print(f"[bold magenta]  ✓ Scheduled {len(debunk_thread)}-tweet debunk thread to @PodDebunker[/bold magenta]")
                     return len(debunk_thread)
