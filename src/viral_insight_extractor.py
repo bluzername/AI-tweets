@@ -8,6 +8,7 @@ import json
 import re
 import time
 from typing import Dict, List, Any, Optional, Tuple
+from pathlib import Path
 from dataclasses import dataclass, asdict
 from enum import Enum
 import openai
@@ -130,13 +131,14 @@ class ViralInsight:
 class ViralContentAnalyzer:
     """Analyzes content for viral potential using multiple AI techniques."""
     
-    def __init__(self, openai_api_key: str, model: str = "deepseek/deepseek-chat", base_url: str = None):
+    def __init__(self, openai_api_key: str, model: str = "deepseek/deepseek-chat", base_url: str = None, prompts_dir: str = None):
         """Initialize viral content analyzer."""
         if base_url:
             self.client = openai.OpenAI(api_key=openai_api_key, base_url=base_url)
         else:
             self.client = openai.OpenAI(api_key=openai_api_key)
         self.model = model
+        self.prompts_dir = Path(prompts_dir) if prompts_dir else None
         
         # Viral content patterns
         self.viral_patterns = {
@@ -170,8 +172,34 @@ class ViralContentAnalyzer:
             response_format={"type": "json_object"},
             temperature=temperature
         )
+        # Handle empty/null responses (context too long, rate limits, etc.)
+        if not response.choices or len(response.choices) == 0:
+            logger.error("API returned no choices - context may be too large")
+            raise ValueError("API returned empty choices - context may be too large, reduce size")
         return response.choices[0].message.content
     
+
+    def _load_prompt(self, prompt_name: str):
+        """Load a prompt from the configured prompts directory.
+
+        Args:
+            prompt_name: Name of the prompt file (without .txt extension)
+
+        Returns:
+            Prompt text if found, None otherwise
+        """
+        if not self.prompts_dir:
+            return None
+
+        prompt_path = self.prompts_dir / f"{prompt_name}.txt"
+        if prompt_path.exists():
+            try:
+                return prompt_path.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"Failed to load prompt {prompt_path}: {e}")
+                return None
+        return None
+
     def extract_viral_insights(self, 
                              transcription: ViralTranscriptionResult,
                              podcast_name: str,
@@ -222,7 +250,7 @@ class ViralContentAnalyzer:
                           transcription: ViralTranscriptionResult,
                           podcast_name: str,
                           episode_title: str,
-                          num_points: int = 5) -> List[ViralInsight]:
+                          num_points: int = 10) -> List[ViralInsight]:
         """
         Extract key educational points from episode for TL;DR threads.
 
@@ -238,30 +266,64 @@ class ViralContentAnalyzer:
         Returns:
             List of key educational insights covering the full episode
         """
-        console.print(f"[dim]  Analyzing {len(transcription.text)} chars of transcript...[/dim]")
+        full_text = transcription.text  # Use ENTIRE transcript, no truncation
+        total_chars = len(full_text)
 
-        # Use larger chunk of transcript for comprehensive coverage
-        # GPT-4 Turbo has 128k context, so we can use much more
-        full_text = transcription.text[:100000]  # ~25k tokens, well within limits
+        # Chunk the transcript for comprehensive coverage
+        chunks = self._chunk_transcript(full_text, chunk_size=40000, overlap=2000)
+        num_chunks = len(chunks)
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console,
-            transient=True
-        ) as progress:
-            task = progress.add_task(f"[yellow]Extracting {num_points} key points with AI...", total=None)
+        if num_chunks > 1:
+            console.print(f"[dim]  Analyzing {total_chars} chars in {num_chunks} chunks for full coverage...[/dim]")
+        else:
+            console.print(f"[dim]  Analyzing {total_chars} chars of transcript...[/dim]")
 
-            prompt = f"""
+        # Collect insights from all chunks
+        all_insights = []
+        points_per_chunk = max(6, (num_points * 2) // num_chunks)  # Over-extract for dedup
+
+        for chunk_idx, chunk in enumerate(chunks):
+            # Add position context for the LLM
+            if num_chunks > 1:
+                if chunk_idx == 0:
+                    position_context = "\n\nNOTE: This is the BEGINNING of the podcast.\n"
+                elif chunk_idx == num_chunks - 1:
+                    position_context = "\n\nNOTE: This is the END/CONCLUSION of the podcast - look for summary points and conclusions.\n"
+                else:
+                    position_context = f"\n\nNOTE: This is part {chunk_idx + 1} of {num_chunks} of the podcast.\n"
+            else:
+                position_context = ""
+
+            chunk_text = chunk['text']
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True
+            ) as progress:
+                task = progress.add_task(f"[yellow]Extracting key points from chunk {chunk_idx + 1}/{num_chunks}...", total=None)
+
+            # Check for language-specific prompts (e.g., Hebrew)
+            custom_prompt = self._load_prompt("key_points")
+            if custom_prompt:
+                # Use custom prompt (Hebrew or other language)
+                prompt = custom_prompt.replace("{transcript}", chunk_text)
+                prompt = f"PODCAST: {podcast_name}\nEPISODE: {episode_title}\n\n" + prompt
+                system_prompt = "אתה מומחה לניתוח פודקאסטים וחילוץ תובנות מרכזיות. החזר JSON בלבד."
+                logger.info(f"Using custom prompt from {self.prompts_dir}")
+            else:
+                # Default English prompt
+                prompt = f"""
 You are an educational content curator analyzing a podcast episode for its key learnings.
 
 PODCAST: {podcast_name}
 EPISODE: {episode_title}
-
+{position_context}
 TRANSCRIPT:
-{full_text}
+{chunk_text}
 
-Extract the {num_points} most important, educational, and useful points from this ENTIRE episode.
+Extract the {points_per_chunk} most important, educational, and useful points from this ENTIRE episode.
 
 Requirements:
 1. COVER THE FULL EPISODE - Don't just extract from the beginning, ensure points span the whole conversation
@@ -279,7 +341,7 @@ For each point, provide:
 - timestamp_estimate: Approximate timestamp in seconds (estimate from position in transcript)
 - actionable: Optional action the listener can take based on this
 
-Return ONLY valid JSON object with a "points" array of {num_points} points, sorted by their order in the episode:
+Return ONLY valid JSON object with a "points" array of {points_per_chunk} points, sorted by their order in the episode:
 
 {{
   "points": [
@@ -300,11 +362,12 @@ CRITICAL:
 - Each point should teach something valuable
 - DO NOT use clickbait language or hooks
 """
+                system_prompt = "You are an expert educational content curator who extracts key learnings from podcasts."
 
             try:
                 # Use retry-wrapped API call
                 result = self._call_openai_with_retry(
-                    system_prompt="You are an expert educational content curator who extracts key learnings from podcasts.",
+                    system_prompt=system_prompt,
                     user_prompt=prompt,
                     temperature=0.3
                 )
@@ -335,8 +398,13 @@ CRITICAL:
                 # Convert to ViralInsight objects
                 insights = []
                 for point_data in points_data[:num_points]:
+                    # Validate text has minimum length (reject garbage responses)
+                    text = point_data.get("text", "").strip()
+                    if len(text) < 10:
+                        logger.warning(f"Skipping invalid point with short text: {text}")
+                        continue
                     insight = ViralInsight(
-                        text=point_data.get('text', '').strip(),
+                        text=text,
                         insight_type=InsightType.KEY_CONCEPT,  # All are educational concepts
                         timestamp=point_data.get('timestamp_estimate', 0),
                         speaker=point_data.get('speaker', 'Unknown'),
@@ -349,14 +417,38 @@ CRITICAL:
                     )
                     insights.append(insight)
 
-                console.print(f"[dim]  ✓ Extracted {len(insights)} key educational points[/dim]")
-                return insights
+                # Check if we got valid points
+                if len(insights) < 2:
+                    logger.warning(f"Only got {len(insights)} valid points from chunk {chunk_idx + 1} - may have returned garbage")
+                    # Continue to next chunk instead of failing entirely
+
+                console.print(f"[dim]  ✓ Extracted {len(insights)} key points from chunk {chunk_idx + 1}[/dim]")
+                all_insights.extend(insights)
 
             except Exception as e:
                 progress.stop()
-                console.print(f"[red]  ✗ AI extraction error: {str(e)[:60]}...[/red]")
-                logger.error(f"Error in AI key point extraction: {e}")
-                return []
+                console.print(f"[red]  ✗ AI extraction error in chunk {chunk_idx + 1}: {str(e)[:60]}...[/red]")
+                logger.error(f"Error in AI key point extraction for chunk {chunk_idx + 1}: {e}")
+                # Continue to next chunk instead of returning
+                continue
+
+        # After processing all chunks, deduplicate and select top insights
+        if not all_insights:
+            console.print("[red]  ✗ No key points extracted from any chunk[/red]")
+            return []
+
+        logger.info(f"Collected {len(all_insights)} raw insights from {num_chunks} chunks")
+
+        # Deduplicate similar insights
+        unique_insights = self._deduplicate_insights(all_insights)
+        logger.info(f"After deduplication: {len(unique_insights)} unique insights")
+
+        # Sort by viral_score and select top num_points
+        sorted_insights = sorted(unique_insights, key=lambda x: x.viral_score, reverse=True)
+        final_insights = sorted_insights[:num_points]
+
+        console.print(f"[dim]  ✓ Final: {len(final_insights)} key educational points from {len(all_insights)} candidates[/dim]")
+        return final_insights
 
     def _analyze_viral_moments(self, 
                              transcription: ViralTranscriptionResult,
@@ -613,7 +705,56 @@ IMPORTANT: Focus on content that:
                 unique_insights.append(insight)
         
         return unique_insights
-    
+
+    def _chunk_transcript(self, text: str, chunk_size: int = 40000, overlap: int = 2000) -> list:
+        """
+        Split transcript into overlapping chunks at sentence boundaries.
+
+        Args:
+            text: Full transcript text
+            chunk_size: Maximum characters per chunk (default 40000 ~ 10k tokens)
+            overlap: Characters of overlap between chunks
+
+        Returns:
+            List of dicts with 'text', 'start_char', 'end_char', 'chunk_index'
+        """
+        import re
+
+        if len(text) <= chunk_size:
+            return [{'text': text, 'start_char': 0, 'end_char': len(text), 'chunk_index': 0}]
+
+        # Pattern for sentence boundaries (handles .!? followed by space/newline)
+        sentence_end = re.compile(r'(?<=[.!?])\s+')
+
+        chunks = []
+        start = 0
+        chunk_index = 0
+
+        while start < len(text):
+            end = min(start + chunk_size, len(text))
+
+            # If not at the end, try to find a sentence boundary
+            if end < len(text):
+                chunk_text = text[start:end]
+                boundaries = list(sentence_end.finditer(chunk_text))
+
+                # Use last sentence boundary if it's at least 80% through the chunk
+                if boundaries and boundaries[-1].end() > chunk_size * 0.8:
+                    end = start + boundaries[-1].end()
+
+            chunks.append({
+                'text': text[start:end],
+                'start_char': start,
+                'end_char': end,
+                'chunk_index': chunk_index
+            })
+
+            # Next chunk starts with overlap
+            start = end - overlap if end < len(text) else len(text)
+            chunk_index += 1
+
+        return chunks
+
     def _rank_insights(self, insights: List[ViralInsight]) -> List[ViralInsight]:
         """Rank insights by viral potential."""
         def rank_key(insight: ViralInsight) -> float:
