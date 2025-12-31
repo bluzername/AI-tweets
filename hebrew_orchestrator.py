@@ -275,7 +275,7 @@ class HebrewOrchestrator:
         points_text = ""
         for i, point in enumerate(key_points, 1):
             text = point.text if hasattr(point, 'text') else str(point)
-            points_text += f"\n{i}. {text}\n"
+            points_text += f"\n\u200f{i}. {text}\n"  # RLM for RTL display
 
         # Add episode link if available
         link_text = ""
