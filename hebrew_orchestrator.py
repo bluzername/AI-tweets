@@ -183,6 +183,20 @@ class HebrewOrchestrator:
                 self.db.update_episode_status(episode_id, 'failed', error_message="No audio URL")
                 return None
 
+            # Check file size and use smaller model for large files to prevent OOM
+            import requests
+            try:
+                resp = requests.head(audio_url, timeout=10, allow_redirects=True)
+                file_size_mb = int(resp.headers.get('content-length', 0)) / (1024 * 1024)
+            except:
+                file_size_mb = 0
+
+            use_tiny_model = file_size_mb > 100
+            if use_tiny_model:
+                logger.warning(f'Large file ({file_size_mb:.1f}MB) - using tiny model to prevent OOM')
+                original_model = self.transcriber.base_transcriber.local_whisper.model_size
+                self.transcriber.base_transcriber.local_whisper.model_size = 'tiny'
+
             # 1. Transcribe with Hebrew language
             transcription = self.transcriber.transcribe_for_viral_content(
                 audio_url=audio_url,
@@ -190,6 +204,10 @@ class HebrewOrchestrator:
                 title=title,
                 language="he"  # Hebrew
             )
+
+            # Restore original model if we switched to tiny
+            if use_tiny_model:
+                self.transcriber.base_transcriber.local_whisper.model_size = original_model
 
             if not transcription or not transcription.text:
                 logger.error(f"Transcription failed for: {title}")
