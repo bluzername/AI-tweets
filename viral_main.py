@@ -704,6 +704,20 @@ class PodcastsTLDRPipeline:
                     # Mark as processing
                     self.ingestor.mark_episode_processing(episode.episode_id)
 
+                    # Check file size and use smaller model for large files to prevent OOM
+                    import requests as req_check
+                    try:
+                        resp = req_check.head(episode.audio_url, timeout=10, allow_redirects=True)
+                        file_size_mb = int(resp.headers.get('content-length', 0)) / (1024 * 1024)
+                    except:
+                        file_size_mb = 0
+
+                    use_tiny_model = file_size_mb > 100
+                    if use_tiny_model:
+                        console.print(f'[yellow]  ⚠ Large file ({file_size_mb:.1f}MB) - using tiny model to prevent OOM[/yellow]')
+                        original_model = self.transcriber.base_transcriber.local_whisper.model_size
+                        self.transcriber.base_transcriber.local_whisper.model_size = 'tiny'
+
                     # Step 2: Transcribe with viral enhancements
                     step_task = overall_progress.add_task(
                         f"[yellow]  → Transcribing audio",
@@ -720,6 +734,10 @@ class PodcastsTLDRPipeline:
                         )
                         overall_progress.update(step_task, advance=90)
 
+                        # Restore original model if we switched to tiny
+                        if use_tiny_model:
+                            self.transcriber.base_transcriber.local_whisper.model_size = original_model
+
                         if not transcription or not transcription.text:
                             overall_progress.remove_task(step_task)
                             console.print("[red]❌ Transcription failed - empty result[/red]")
@@ -728,6 +746,9 @@ class PodcastsTLDRPipeline:
                             continue
 
                     except Exception as transcription_error:
+                        # Restore original model if we switched to tiny
+                        if use_tiny_model:
+                            self.transcriber.base_transcriber.local_whisper.model_size = original_model
                         overall_progress.remove_task(step_task)
                         console.print(f"[red]❌ Transcription error: {str(transcription_error)[:60]}...[/red]")
                         self.ingestor.mark_episode_failed(episode.episode_id, f"Transcription error: {str(transcription_error)}")
