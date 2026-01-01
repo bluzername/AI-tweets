@@ -47,6 +47,9 @@ from src.claim_extractor import ClaimExtractor
 from src.fact_checker import FactChecker
 from src.debunk_thread_generator import DebunkThreadGenerator, DebunkThreadConfig
 
+# GPU lock for coordinating with Hebrew pipeline
+from src.gpu_lock import gpu_lock
+
 # Initialize Rich console
 console = Console()
 
@@ -85,6 +88,7 @@ class PodcastsTLDRPipeline:
         self.checkpoint_file = "data/pipeline_checkpoint.json"
 
         with console.status("[bold cyan]Initializing pipeline...", spinner="dots"):
+            self.config_file = config_file  # Store for Telegram scheduler
             self.config = self._load_config(config_file)
 
             # Initialize data directories
@@ -273,6 +277,9 @@ class PodcastsTLDRPipeline:
             posting_frequency=self.config["posting_frequency"]
         )
 
+        # 5b. Telegram Scheduler (for immediate posting)
+        self._init_telegram_scheduler()
+
         # 6. Fact-Check Pipeline (PodDebunker)
         self._init_factcheck_pipeline(api_key)
 
@@ -348,6 +355,22 @@ class PodcastsTLDRPipeline:
             self.claim_extractor = None
             self.fact_checker = None
             self.debunk_generator = None
+
+    def _init_telegram_scheduler(self):
+        """Initialize Telegram scheduler for immediate posting."""
+        try:
+            from src.telegram_scheduler import create_telegram_scheduler_from_config
+
+            self.telegram_scheduler = create_telegram_scheduler_from_config(
+                config_file=self.config_file
+            )
+            if self.telegram_scheduler:
+                logger.info("✅ Telegram scheduler initialized for immediate posting")
+            else:
+                logger.info("ℹ️ Telegram not configured (immediate posting disabled)")
+        except Exception as e:
+            logger.warning(f"Could not initialize Telegram scheduler: {e}")
+            self.telegram_scheduler = None
 
     def _init_factcheck_db(self):
         """Initialize the fact-check results database."""
@@ -726,12 +749,14 @@ class PodcastsTLDRPipeline:
 
                     try:
                         overall_progress.update(step_task, advance=10)
-                        transcription = self.transcriber.transcribe_for_viral_content(
-                            audio_url=episode.audio_url,
-                            youtube_urls=episode.youtube_urls or [],
-                            title=episode.title,
-                            language=None
-                        )
+                        # Use GPU lock to prevent conflicts with Hebrew pipeline
+                        with gpu_lock(name="English"):
+                            transcription = self.transcriber.transcribe_for_viral_content(
+                                audio_url=episode.audio_url,
+                                youtube_urls=episode.youtube_urls or [],
+                                title=episode.title,
+                                language=None
+                            )
                         overall_progress.update(step_task, advance=90)
 
                         # Restore original model if we switched to tiny
@@ -948,6 +973,23 @@ class PodcastsTLDRPipeline:
                     overall_progress.update(step_task, advance=100)
                     overall_progress.remove_task(step_task)
                     console.print(f"[green]  ✓ Scheduled 6-tweet thread[/green]")
+
+                    # Step 7b: Post to Telegram immediately (no rate limits)
+                    if hasattr(self, 'telegram_scheduler') and self.telegram_scheduler:
+                        try:
+                            tg_success = self.telegram_scheduler.post_thread_immediately(
+                                thread_tweets=thread,
+                                podcast_name=episode.podcast_name,
+                                episode_title=episode.title,
+                                thumbnail_path=thumbnail_path,
+                                x_account_name=list(self.config["x_accounts"].keys())[0]
+                            )
+                            if tg_success:
+                                console.print(f"[green]  ✓ Posted to Telegram immediately[/green]")
+                            else:
+                                console.print(f"[yellow]  ⚠ Telegram post failed[/yellow]")
+                        except Exception as tg_error:
+                            console.print(f"[yellow]  ⚠ Telegram error: {str(tg_error)[:40]}...[/yellow]")
 
                     # Step 8: Fact-Check Pipeline (PodDebunker)
                     debunk_tweets_scheduled = 0

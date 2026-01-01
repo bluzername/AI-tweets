@@ -19,6 +19,7 @@ from src.telegram_publisher import TelegramPublisher
 from src.podcast_ingestor import PodcastIngestor, EpisodeDatabase
 from src.viral_transcriber import ViralTranscriber
 from src.viral_insight_extractor import ViralContentAnalyzer
+from src.gpu_lock import gpu_lock
 
 logger = logging.getLogger(__name__)
 
@@ -197,13 +198,14 @@ class HebrewOrchestrator:
                 original_model = self.transcriber.base_transcriber.local_whisper.model_size
                 self.transcriber.base_transcriber.local_whisper.model_size = 'tiny'
 
-            # 1. Transcribe with Hebrew language
-            transcription = self.transcriber.transcribe_for_viral_content(
-                audio_url=audio_url,
-                youtube_urls=[],
-                title=title,
-                language="he"  # Hebrew
-            )
+            # 1. Transcribe with Hebrew language (with GPU lock to prevent conflicts)
+            with gpu_lock(name="Hebrew"):
+                transcription = self.transcriber.transcribe_for_viral_content(
+                    audio_url=audio_url,
+                    youtube_urls=[],
+                    title=title,
+                    language="he"  # Hebrew
+                )
 
             # Restore original model if we switched to tiny
             if use_tiny_model:
