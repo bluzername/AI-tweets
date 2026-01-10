@@ -26,6 +26,10 @@ Required API Keys (in .env):
 
 import os
 import sys
+import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Set default intervals if not specified
 os.environ.setdefault("DISCOVERY_INTERVAL", "14400")      # 4 hours
@@ -40,6 +44,50 @@ load_dotenv()
 
 # Import and run orchestrator
 from src.autonomous_orchestrator import main
+
+
+def run_hebrew_pipeline():
+    """Run Hebrew pipeline in background thread."""
+    import time
+    from datetime import datetime
+    try:
+        from hebrew_orchestrator import HebrewOrchestrator
+        orchestrator = HebrewOrchestrator(config_file="/app/hebrew_config.json")
+        logger.info("Hebrew pipeline started")
+
+        # Run without signal handlers (can't use signals in thread)
+        orchestrator.running = True
+        interval_minutes = 60
+
+        while orchestrator.running:
+            try:
+                cycle_start = datetime.now()
+                stats = orchestrator.run_cycle()
+                logger.info(
+                    f"Hebrew cycle: {stats['discovered']} discovered, "
+                    f"{stats['processed']} processed, {stats['posted']} posted"
+                )
+                elapsed = (datetime.now() - cycle_start).total_seconds()
+                sleep_time = max(0, interval_minutes * 60 - elapsed)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+            except Exception as e:
+                logger.error(f"Hebrew cycle error: {e}")
+                time.sleep(60)
+
+    except Exception as e:
+        logger.error(f"Hebrew pipeline crashed: {e}")
+
+
+def run_web_dashboard():
+    """Run web dashboard on port 5000."""
+    try:
+        from src.web_dashboard import app as dashboard_app
+        logger.info("Web dashboard starting on port 5000")
+        dashboard_app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Web dashboard failed: {e}")
+
 
 if __name__ == "__main__":
     print("""
@@ -56,4 +104,16 @@ if __name__ == "__main__":
     ================================================
     """)
 
+    # Start Hebrew pipeline in background thread
+    hebrew_thread = threading.Thread(target=run_hebrew_pipeline, daemon=True, name="HebrewPipeline")
+    hebrew_thread.start()
+    print("    Hebrew pipeline started in background thread")
+
+    # Start web dashboard in background thread
+    dashboard_thread = threading.Thread(target=run_web_dashboard, daemon=True, name="WebDashboard")
+    dashboard_thread.start()
+    print("    Web dashboard running at http://localhost:5000")
+    print()
+
+    # Run main English pipeline (blocking)
     main()

@@ -20,6 +20,7 @@ from src.podcast_ingestor import PodcastIngestor, EpisodeDatabase
 from src.viral_transcriber import ViralTranscriber
 from src.viral_insight_extractor import ViralContentAnalyzer
 from src.gpu_lock import gpu_lock
+from src.deep_link_resolver import DeepLinkResolver, format_listen_links
 
 logger = logging.getLogger(__name__)
 
@@ -297,13 +298,25 @@ class HebrewOrchestrator:
             text = point.text if hasattr(point, 'text') else str(point)
             points_text += f"\n\u200f{i}. {text}\n"  # RLM for RTL display
 
-        # Add episode link if available
+        # Add platform deep links (Spotify/Apple)
+        listen_links = ""
+        try:
+            platform_config = self.config.config.get('podcast_platforms', {})
+            if platform_config:
+                resolver = DeepLinkResolver(platform_config)
+                links = resolver.get_episode_links(podcast_name, episode_title)
+                if links:
+                    listen_links = format_listen_links(links, language="he")
+        except Exception as e:
+            logger.warning(f"Failed to get deep links: {e}")
+
+        # Add episode link if available and no platform links found
         link_text = ""
-        if episode_url:
+        if episode_url and not listen_links:
             link_text = f"\n\n🎧 [לפרק המלא]({episode_url})"
 
         # Combine
-        message = f"{header}{separator}{points_text}{link_text}"
+        message = f"{header}{separator}{points_text}{listen_links}{link_text}"
 
         # Telegram limit is 4096 chars
         if len(message) > 4000:

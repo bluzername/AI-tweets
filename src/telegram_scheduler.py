@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .telegram_publisher import TelegramPublisher
 from .viral_scheduler import ThreadQueue
+from .deep_link_resolver import DeepLinkResolver, format_listen_links
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +24,19 @@ class TelegramScheduler:
     Unlike X scheduler, this can post immediately without rate limit concerns.
     """
     
-    def __init__(self, telegram_config: Dict[str, Dict], thread_queue: ThreadQueue = None):
+    def __init__(self, telegram_config: Dict[str, Dict], thread_queue: ThreadQueue = None,
+                 platform_config: Dict = None):
         """
         Initialize Telegram scheduler.
-        
+
         Args:
             telegram_config: Dict of channel_name -> {bot_token, channel_id, enabled}
             thread_queue: ThreadQueue instance (shared with X scheduler)
+            platform_config: Dict of podcast_name -> {spotify_show_id, apple_podcast_id}
         """
         self.config = telegram_config
+        self.platform_config = platform_config or {}
+        self.deep_link_resolver = DeepLinkResolver(self.platform_config) if self.platform_config else None
         self.thread_queue = thread_queue or ThreadQueue()
         self.publishers: Dict[str, TelegramPublisher] = {}
         
@@ -101,14 +106,23 @@ class TelegramScheduler:
             thumbnail_path = thread_record.get('thumbnail_path')
             
             logger.info(f"Posting to Telegram ({channel_name}): {podcast_name} - {episode_title}")
-            
-            # Publish
+
+            # Resolve deep links
+            deep_links = None
+            if self.deep_link_resolver:
+                try:
+                    deep_links = self.deep_link_resolver.get_episode_links(podcast_name, episode_title)
+                except Exception as e:
+                    logger.warning(f"Failed to resolve deep links: {e}")
+
+            # Publish with deep links
             result = publisher.publish_thread(
                 tweets=tweets,
                 podcast_name=podcast_name,
                 episode_title=episode_title,
                 thumbnail_path=thumbnail_path,
-                account_name=channel_name
+                account_name=channel_name,
+                deep_links=deep_links
             )
             
             if result.get('success'):
@@ -207,12 +221,24 @@ class TelegramScheduler:
         try:
             logger.info(f"Posting immediately to Telegram ({channel_name}): {podcast_name}")
 
+            # Resolve deep links
+            deep_links = None
+            if self.deep_link_resolver:
+                try:
+                    deep_links = self.deep_link_resolver.get_episode_links(podcast_name, episode_title)
+                    if deep_links:
+                        logger.debug(f"Resolved deep links: {list(deep_links.keys())}")
+                except Exception as e:
+                    logger.warning(f"Failed to resolve deep links: {e}")
+
+            # Publish with deep links passed to formatter
             result = publisher.publish_thread(
                 tweets=thread_tweets,
                 podcast_name=podcast_name,
                 episode_title=episode_title,
                 thumbnail_path=thumbnail_path,
-                account_name=channel_name
+                account_name=channel_name,
+                deep_links=deep_links
             )
 
             if result.get('success'):
@@ -231,32 +257,35 @@ def create_telegram_scheduler_from_config(config_file: str = "viral_config.json"
                                            thread_queue: ThreadQueue = None) -> Optional[TelegramScheduler]:
     """
     Create TelegramScheduler from config file.
-    
+
     Args:
         config_file: Path to viral_config.json
         thread_queue: Optional ThreadQueue instance
-        
+
     Returns:
         TelegramScheduler or None if not configured
     """
     try:
         with open(config_file, 'r') as f:
             config = json.load(f)
-        
+
         telegram_config = config.get('telegram_channels', {})
-        
+
         if not telegram_config:
             logger.info("No Telegram channels configured")
             return None
-        
+
         # Check if any channel is enabled
         enabled_channels = [k for k, v in telegram_config.items() if v.get('enabled')]
         if not enabled_channels:
             logger.info("No Telegram channels enabled")
             return None
-        
-        return TelegramScheduler(telegram_config, thread_queue)
-        
+
+        # Get podcast platforms config for deep links
+        platform_config = config.get('podcast_platforms', {})
+
+        return TelegramScheduler(telegram_config, thread_queue, platform_config)
+
     except FileNotFoundError:
         logger.warning(f"Config file not found: {config_file}")
         return None

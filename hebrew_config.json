@@ -1,0 +1,131 @@
+{
+  "pipeline_name": "hebrew_podcast_tldr",
+  "language": {
+    "code": "he",
+    "name": "Hebrew",
+    "direction": "rtl"
+  },
+  "transcription": {
+    "whisper_language": "he",
+    "methods": [
+      "local_whisper",
+      "whisper"
+    ]
+  },
+  "database": {
+    "episodes_db": "data/hebrew_episodes.db",
+    "thread_queue_db": "data/hebrew_thread_queue.db"
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token_env": "HEBREW_TELEGRAM_BOT_TOKEN",
+    "channel_id_env": "HEBREW_TELEGRAM_CHANNEL_ID"
+  },
+  "twitter": {
+    "enabled": false
+  },
+  "podcast_feeds": [
+    {
+      "url": "https://geekonomy.podbean.com/feed.xml",
+      "name": "Geekonomy",
+      "account": "hebrew_podcast"
+    },
+    {
+      "name": "התשובה עם דורון פישלר",
+      "url": "https://www.spreaker.com/show/4228834/episodes/feed",
+      "enabled": true
+    },
+    {
+      "name": "בזמן שעבדתם",
+      "url": "https://www.omnycontent.com/d/playlist/2ee97a4e-8795-4260-9648-accf00a38c6a/a5d4b51f-5b9e-43db-84da-ace100c04108/0ab18f83-1327-4f4e-9d7a-ace100c0411f/podcast.rss",
+      "enabled": true
+    },
+    {
+      "name": "עושים היסטוריה עם רן לוי Osim Historia With Ran Levi",
+      "url": "https://www.spreaker.com/show/4227531/episodes/feed",
+      "enabled": true
+    },
+    {
+      "name": "שיחת בוגר",
+      "url": "https://anchor.fm/s/fbedb2b8/podcast/rss",
+      "enabled": true
+    },
+    {
+      "name": "רברס עם פלטפורמה",
+      "url": "http://feeds.feedburner.com/reversim",
+      "enabled": true
+    },
+    {
+      "name": "Rompecabezas",
+      "url": "https://www.spreaker.com/show/2954848/episodes/feed",
+      "enabled": true
+    },
+    {
+      "name": "Startup for Startup",
+      "url": "https://www.omnycontent.com/d/playlist/5065d512-1eb7-465b-8dd5-aab100df53d1/18ad29c1-d962-41e1-9b04-ad880088faf2/09f6273b-a6f1-42e6-a46d-ad88008a9efd/podcast.rss",
+      "enabled": true
+    },
+    {
+      "name": "Cyber cyber",
+      "url": "https://www.cybsecurity.org/feed/podcast/",
+      "enabled": true
+    },
+    {
+      "name": "DevInsider",
+      "url": "https://feed.podbean.com/devinsider/feed.xml",
+      "enabled": true
+    },
+    {
+      "name": "Hidden Layers",
+      "url": "https://feed.podbean.com/hiddenlayers/feed.xml",
+      "enabled": true
+    }
+  ],
+  "podcast_platforms": {
+    "גיקונומי": {
+      "spotify_show_id": "5hywQO06JEwXQx1bqoeyb1",
+      "apple_podcast_id": "1019124387"
+    },
+    "עושים היסטוריה עם רן לוי Osim Historia With Ran Levi": {
+      "spotify_show_id": "5lEruNWWFJ0XCKuGy2Ekr7",
+      "apple_podcast_id": "900613182"
+    },
+    "התשובה עם דורון פישלר Hatshuva With Doron Fishler": {
+      "spotify_show_id": "24ovPN5Loc5HTtIBEqjvP5"
+    },
+    "בזמן שעבדתם": {
+      "spotify_show_id": "0R8OGY0eb6BJSepIApWB0z"
+    },
+    "שיחת בוגר": {
+      "spotify_show_id": "5ZnfFYlRj6Z3cdq60pMaZA"
+    },
+    "רברס עם פלטפורמה": {
+      "spotify_show_id": "6Lr6PCSEqN8siYm9n6fE8N"
+    },
+    "Startup for Startup - Global ⚡ by monday.com": {
+      "spotify_show_id": "2a7T3QqJuvryJHMfhrudTs",
+      "apple_podcast_id": "1404411941"
+    },
+    "DevInsider - The story of the Israeli tech companies": {
+      "spotify_show_id": "1VFeamuuoqwzpvnX2PFFtD",
+      "apple_podcast_id": "1462049127"
+    },
+    "Hidden layers": {
+      "spotify_show_id": "4heKuNCOJf0YArR44gQEtC"
+    }
+  },
+  "podcast_handles": {},
+  "key_points_per_episode": 10,
+  "posting_frequency": 8,
+  "optimal_times": [
+    "07:00",
+    "09:00",
+    "12:00",
+    "15:00",
+    "18:00",
+    "20:00",
+    "21:00",
+    "22:00"
+  ],
+  "prompts_dir": "prompts/hebrew"
+}
