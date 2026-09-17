@@ -57,7 +57,7 @@
 - `python main.py` - Run the main MVP script.
 - `pip install -r requirements.txt` - Install dependencies.
 - `cp .env.example .env` - Setup environment file with API keys.
-- `python test_suite.py` — Run automated tests.
+- `pytest` - Run automated tests (`pip install -r requirements-test.txt` first).
 
 ***
 
