@@ -127,7 +127,7 @@ python src/autonomous_orchestrator.py
 
 ## Post-Deployment
 
-After deploying with any method, see [AUTONOMOUS_DEPLOYMENT.md](../AUTONOMOUS_DEPLOYMENT.md) for:
+After deploying with any method, see [AUTONOMOUS_DEPLOYMENT.md](../docs/AUTONOMOUS_DEPLOYMENT.md) for:
 - Configuration tuning
 - Monitoring and alerting
 - Health checks
@@ -139,5 +139,5 @@ After deploying with any method, see [AUTONOMOUS_DEPLOYMENT.md](../AUTONOMOUS_DE
 
 For issues with deployment:
 1. Check logs (see deployment method above)
-2. Review [AUTONOMOUS_DEPLOYMENT.md](../AUTONOMOUS_DEPLOYMENT.md)
+2. Review [AUTONOMOUS_DEPLOYMENT.md](../docs/AUTONOMOUS_DEPLOYMENT.md)
 3. Open an issue with logs and config (remove API keys!)

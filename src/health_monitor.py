@@ -16,6 +16,8 @@ from enum import Enum
 import requests
 import json
 
+from src.model_config import get_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -384,13 +386,13 @@ class HealthMonitor:
                 api_key = os.getenv("OPENROUTER_API_KEY")
                 base_url = "https://openrouter.ai/api/v1"
                 service_name = "OpenRouter"
-                test_model = "meta-llama/llama-3.2-3b-instruct:free"
+                test_model = get_model("OPENROUTER_HEALTH_MODEL")
             else:
                 # Check OpenAI API
                 api_key = os.getenv("OPENAI_API_KEY") or self.config.get("openai_api_key")
                 base_url = None
                 service_name = "OpenAI"
-                test_model = "gpt-3.5-turbo"
+                test_model = get_model("GPT_FAST_MODEL")
 
             if not api_key or api_key in ["your_openai_api_key_here", "your_openrouter_api_key_here"]:
                 return HealthCheck(

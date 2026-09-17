@@ -8,6 +8,7 @@ import openai
 import json
 from .ai_analyzer import PodcastHighlight
 from .unicode_utils import normalize_json_response
+from .model_config import get_model
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class ThreadStyle:
 class ThreadGenerator:
     """Generates X.com threads from podcast highlights."""
     
-    def __init__(self, api_key: str, model: str = "gpt-4-turbo-preview"):
+    def __init__(self, api_key: str, model: Optional[str] = None):
         """
         Initialize thread generator.
         
@@ -74,7 +75,7 @@ class ThreadGenerator:
             model: GPT model to use
         """
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = model
+        self.model = model or get_model("GPT_MODEL")
     
     def generate_thread(
         self,
@@ -231,7 +232,7 @@ class ThreadGenerator:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model=get_model("GPT_FAST_MODEL"),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.9,
                 response_format={"type": "json_object"}
@@ -273,7 +274,7 @@ class ThreadGenerator:
         for tweet in thread:
             try:
                 response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model=get_model("GPT_FAST_MODEL"),
                     messages=[
                         {"role": "system", "content": style_prompt},
                         {"role": "user", "content": f"Rewrite this tweet: {tweet.content}"}

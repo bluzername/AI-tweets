@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from dotenv import load_dotenv
 
+from .model_config import get_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,8 +124,8 @@ class Config:
         load_dotenv(self.env_file)
         
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.whisper_model = os.getenv("WHISPER_MODEL", "whisper-1")
-        self.gpt_model = os.getenv("GPT_MODEL", "gpt-4-turbo-preview")
+        self.whisper_model = get_model("WHISPER_MODEL")
+        self.gpt_model = get_model("GPT_MODEL")
 
         # OpenRouter configuration (for DeepSeek and other models)
         self.use_openrouter = os.getenv("USE_OPENROUTER", "false").lower() == "true"

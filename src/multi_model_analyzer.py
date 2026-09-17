@@ -17,22 +17,31 @@ import json
 from collections import defaultdict
 import hashlib
 
+from src.model_config import get_model
+
 logger = logging.getLogger(__name__)
 
 
 class AIModel(Enum):
-    """Available AI models for ensemble."""
-    # Direct API model names
-    GPT4 = "gpt-4"
-    GPT4_TURBO = "gpt-4-turbo-preview"
-    CLAUDE_SONNET = "claude-3-sonnet-20240229"
-    CLAUDE_OPUS = "claude-3-opus-20240229"
-    GEMINI_PRO = "gemini-pro"
+    """
+    Model roles for the ensemble. The value is the role name in
+    model_config; the concrete API model id comes from `.id` so it can be
+    changed in .env without touching code.
+    """
+    # Direct API roles
+    GPT4_TURBO = "GPT_MODEL"
+    CLAUDE_SONNET = "CLAUDE_MODEL"
+    GEMINI_PRO = "GEMINI_MODEL"
 
-    # OpenRouter model names (when using USE_OPENROUTER=true)
-    OPENROUTER_GPT4_TURBO = "openai/gpt-4-turbo-preview"
-    OPENROUTER_CLAUDE_SONNET = "anthropic/claude-3-sonnet"
-    OPENROUTER_GEMINI_PRO = "google/gemini-pro-1.5"
+    # OpenRouter roles (when using USE_OPENROUTER=true)
+    OPENROUTER_GPT4_TURBO = "OPENROUTER_GPT_MODEL"
+    OPENROUTER_CLAUDE_SONNET = "OPENROUTER_CLAUDE_MODEL"
+    OPENROUTER_GEMINI_PRO = "OPENROUTER_GEMINI_MODEL"
+
+    @property
+    def id(self) -> str:
+        """Concrete model id sent to the provider."""
+        return get_model(self.value)
 
 
 @dataclass
@@ -125,7 +134,7 @@ class MultiModelAnalyzer:
         else:
             self.enabled_models = self._detect_available_models()
 
-        logger.info(f"🤖 Multi-model analyzer initialized with: {[m.value for m in self.enabled_models]}")
+        logger.info(f"🤖 Multi-model analyzer initialized with: {[m.id for m in self.enabled_models]}")
 
     def _init_clients(self):
         """Initialize API clients for available models."""
@@ -165,9 +174,8 @@ class MultiModelAnalyzer:
             # Google (Gemini)
             if self.google_api_key and self.google_api_key != "your_google_api_key_here":
                 try:
-                    import google.generativeai as genai
-                    genai.configure(api_key=self.google_api_key)
-                    self.google_client = genai
+                    from google import genai
+                    self.google_client = genai.Client(api_key=self.google_api_key)
                     logger.info("✅ Google AI client initialized")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to initialize Google AI: {e}")
@@ -228,9 +236,9 @@ class MultiModelAnalyzer:
                     model, transcription, podcast_name, episode_title, max_insights
                 )
                 all_insights.extend(insights)
-                logger.info(f"✅ {model.value}: Extracted {len(insights)} insights")
+                logger.info(f"✅ {model.id}: Extracted {len(insights)} insights")
             except Exception as e:
-                logger.error(f"❌ {model.value} failed: {e}")
+                logger.error(f"❌ {model.id} failed: {e}")
                 continue
 
         if not all_insights:
@@ -266,9 +274,9 @@ class MultiModelAnalyzer:
         if model in [AIModel.OPENROUTER_GPT4_TURBO, AIModel.OPENROUTER_CLAUDE_SONNET, AIModel.OPENROUTER_GEMINI_PRO]:
             return self._extract_openrouter(model, prompt)
         # Direct API models
-        elif model in [AIModel.GPT4, AIModel.GPT4_TURBO]:
+        elif model == AIModel.GPT4_TURBO:
             return self._extract_openai(model, prompt)
-        elif model in [AIModel.CLAUDE_SONNET, AIModel.CLAUDE_OPUS]:
+        elif model == AIModel.CLAUDE_SONNET:
             return self._extract_anthropic(model, prompt)
         elif model == AIModel.GEMINI_PRO:
             return self._extract_google(prompt)
@@ -326,7 +334,7 @@ Return ONLY the JSON array, no other text."""
 
         try:
             response = self.openai_client.chat.completions.create(
-                model=model.value,
+                model=model.id,
                 messages=[
                     {"role": "system", "content": "You are an expert content analyst."},
                     {"role": "user", "content": prompt}
@@ -352,7 +360,7 @@ Return ONLY the JSON array, no other text."""
                     viral_score=item["viral_score"],
                     confidence=item["confidence"],
                     reasoning=item.get("reasoning"),
-                    model=model.value
+                    model=model.id
                 )
                 for item in insights_data
             ]
@@ -366,7 +374,7 @@ Return ONLY the JSON array, no other text."""
 
         try:
             response = self.openrouter_client.chat.completions.create(
-                model=model.value,
+                model=model.id,
                 messages=[
                     {"role": "system", "content": "You are an expert content analyst."},
                     {"role": "user", "content": prompt}
@@ -399,13 +407,13 @@ Return ONLY the JSON array, no other text."""
                     viral_score=item["viral_score"],
                     confidence=item["confidence"],
                     reasoning=item.get("reasoning"),
-                    model=model.value
+                    model=model.id
                 )
                 for item in insights_data
             ]
 
         except Exception as e:
-            logger.error(f"OpenRouter extraction failed for {model.value}: {e}")
+            logger.error(f"OpenRouter extraction failed for {model.id}: {e}")
             return []
 
     def _extract_anthropic(self, model: AIModel, prompt: str) -> List[ModelInsight]:
@@ -413,7 +421,7 @@ Return ONLY the JSON array, no other text."""
 
         try:
             response = self.anthropic_client.messages.create(
-                model=model.value,
+                model=model.id,
                 max_tokens=2000,
                 messages=[
                     {"role": "user", "content": prompt}
@@ -446,7 +454,7 @@ Return ONLY the JSON array, no other text."""
                     viral_score=item["viral_score"],
                     confidence=item["confidence"],
                     reasoning=item.get("reasoning"),
-                    model=model.value
+                    model=model.id
                 )
                 for item in insights_data
             ]
@@ -459,8 +467,8 @@ Return ONLY the JSON array, no other text."""
         """Extract insights using Google (Gemini)."""
 
         try:
-            model = self.google_client.GenerativeModel('gemini-pro')
-            response = model.generate_content(prompt)
+            model_id = AIModel.GEMINI_PRO.id
+            response = self.google_client.models.generate_content(model=model_id, contents=prompt)
 
             content = response.text
 
@@ -487,7 +495,7 @@ Return ONLY the JSON array, no other text."""
                     viral_score=item["viral_score"],
                     confidence=item["confidence"],
                     reasoning=item.get("reasoning"),
-                    model="gemini-pro"
+                    model=model_id
                 )
                 for item in insights_data
             ]
@@ -587,7 +595,7 @@ Return ONLY the JSON array, no other text."""
         """Get statistics about model usage and performance."""
 
         return {
-            "enabled_models": [m.value for m in self.enabled_models],
+            "enabled_models": [m.id for m in self.enabled_models],
             "available_clients": {
                 "openai": self.openai_client is not None,
                 "anthropic": self.anthropic_client is not None,

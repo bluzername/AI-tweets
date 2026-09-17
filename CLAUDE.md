@@ -4,7 +4,7 @@
 - Build a modular, scalable Python MVP that:
   - Pulls recent episodes from multiple podcast RSS feeds.
   - Transcribes audio using OpenAI Whisper API (secured via `.env`).
-  - Uses GPT-5 to extract the top 2-3 insightful, actionable highlights.
+  - Uses the configured chat model (`GPT_MODEL` in `.env`, see `src/model_config.py`) to extract the top 2-3 insightful, actionable highlights.
   - Crafts engaging, multi-tweet X.com threads (with dynamic teasers and thread storytelling).
   - Supports multiple X.com accounts with distinct audience profiles and tone.
   - Posts threads via X.com API or falls back to `.md` file output if API keys are missing or invalid.
@@ -13,7 +13,7 @@
 ## Core Functional Requirements
 - Fetch latest episodes from configurable RSS feeds.
 - Transcribe audio with OpenAI Whisper API (API key read securely from `.env`).
-- Use GPT-5 to:
+- Use the configured chat model (never hardcode a model id; add roles to `src/model_config.py`) to:
   - Extract 2–3 original, compelling highlights per episode.
   - Generate multi-tweet X.com threads including:
     - Context-setting first tweet with multiple dynamic teaser options for A/B testing.
@@ -50,13 +50,13 @@
 - Provide detailed instructions upfront to maximize Claude’s success rate.
 - Use multiple Claude instances or subagents for review and iteration.
 - Document all environment setup steps (including `.env` handling for OpenAI and X.com keys).
-- Write tests to cover fetching, transcription, GPT-5 prompt handling, posting, and fallback logic.
+- Write tests to cover fetching, transcription, prompt handling, posting, and fallback logic. Run them with `pytest` (config in `pytest.ini`, light dependencies in `requirements-test.txt`).
 - Commit early and often with clear messages about features and fixes.
 
 ## Bash/CLI Commands (examples)
-- `python main.py` — Run the main MVP script.
-- `pip install -r requirements.txt` — Install dependencies.
-- `cp .env.example .env` — Setup environment file with API keys.
+- `python main.py` - Run the main MVP script.
+- `pip install -r requirements.txt` - Install dependencies.
+- `cp .env.example .env` - Setup environment file with API keys.
 - `python test_suite.py` — Run automated tests.
 
 ***
