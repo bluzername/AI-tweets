@@ -29,6 +29,7 @@ from rich import box
 load_dotenv()
 
 # Import all viral content components
+from src.model_config import get_model
 from src.podcast_ingestor import PodcastIngestor
 from src.viral_transcriber import ViralTranscriber
 from src.viral_insight_extractor import ViralContentAnalyzer, InsightDatabase
@@ -258,7 +259,7 @@ class PodcastsTLDRPipeline:
         # 3. Insight Extractor
         self.insight_analyzer = ViralContentAnalyzer(
             openai_api_key=api_key,
-            model="gpt-4-turbo-preview" if use_openrouter else "gpt-4",
+            model=get_model("OPENROUTER_GPT_MODEL") if use_openrouter else get_model("GPT_MODEL"),
             base_url=openai_base_url
         )
 
@@ -267,7 +268,7 @@ class PodcastsTLDRPipeline:
         # 4. Tweet Crafter
         self.tweet_crafter = ViralTweetCrafter(
             openai_api_key=api_key,
-            model="gpt-4-turbo-preview" if use_openrouter else "gpt-4",
+            model=get_model("OPENROUTER_GPT_MODEL") if use_openrouter else get_model("GPT_MODEL"),
             base_url=openai_base_url
         )
         

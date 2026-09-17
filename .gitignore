@@ -45,16 +45,13 @@ env/
 logs/
 /tmp/*.log
 
-# Output
+# Output (generated thread markdown lives here)
 output/
-*.md
-!README.md
-!CLAUDE.md
-!LOCAL_SETUP.md
-!INSTALLATION.md
-!COST_OPTIMIZATION.md
-!SETUP_GUIDE.md
-!DEPLOYMENT.md
+
+# Runtime state and backups
+backups/
+*.db
+*.db.*.backup
 
 # Cache
 .transcription_cache/

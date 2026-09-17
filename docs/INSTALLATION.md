@@ -34,7 +34,7 @@ DRY_RUN=true
 ### 3. Test Installation
 ```bash
 # Run pipeline test
-python test_full_pipeline.py
+python scripts/test_full_pipeline.py
 
 # Generate your first thread (dry-run mode)
 python main.py --dry-run --limit 1
@@ -226,7 +226,7 @@ These podcasts have reliable RSS feeds and often include YouTube versions:
 
 ### 1. Component Test
 ```bash
-python test_full_pipeline.py
+python scripts/test_full_pipeline.py
 ```
 Should output: `🎉 PIPELINE TEST PASSED!`
 

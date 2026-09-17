@@ -17,6 +17,7 @@ from typing import List, Optional, Dict, Any
 
 from .base import HandleSource
 from ..models import HandleCandidate, HandleLookupContext
+from ...model_config import get_model
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ ONLY return valid JSON."""
                     "HTTP-Referer": "https://github.com/podcast-tldr",
                 },
                 json={
-                    "model": "openai/gpt-4o-mini",  # Fast and cheap
+                    "model": get_model("OPENROUTER_MINI_MODEL"),
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
@@ -153,7 +154,7 @@ ONLY return valid JSON."""
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "gpt-4o-mini",
+                    "model": get_model("GPT_MINI_MODEL"),
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}

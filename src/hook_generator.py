@@ -13,6 +13,8 @@ from enum import Enum
 import json
 from openai import OpenAI
 
+from src.model_config import get_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,10 +54,10 @@ class HookGenerator:
     - Template fallback for offline use
     """
 
-    def __init__(self, openai_api_key: Optional[str] = None, model: str = "gpt-4-turbo-preview"):
+    def __init__(self, openai_api_key: Optional[str] = None, model: Optional[str] = None):
         """Initialize hook generator."""
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        self.model = model
+        self.model = model or get_model("GPT_MODEL")
 
         self.client = None
         if self.openai_api_key and self.openai_api_key != "your_openai_api_key_here":

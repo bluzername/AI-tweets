@@ -4,6 +4,7 @@ Core functionality tests - Health monitoring, recovery, alerting.
 
 import pytest
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -285,10 +286,12 @@ class TestCostTracker:
         tracker = CostTracker(db_path=temp_db)
 
         # Track multiple costs
+        # Timestamps must be recent: get_cost_breakdown() looks back from now.
+        now = datetime.utcnow().replace(microsecond=0).isoformat()
         costs = [
-            APICost("openai", "completion", "gpt-4", 1000, 0.03, "2025-01-19T12:00:00"),
-            APICost("openai", "embedding", "text-embedding-3-small", 5000, 0.0001, "2025-01-19T12:05:00"),
-            APICost("anthropic", "completion", "claude-3-sonnet", 800, 0.024, "2025-01-19T12:10:00"),
+            APICost("openai", "completion", "gpt-4", 1000, 0.03, now),
+            APICost("openai", "embedding", "text-embedding-3-small", 5000, 0.0001, now),
+            APICost("anthropic", "completion", "claude-sonnet-5", 800, 0.024, now),
         ]
 
         for cost in costs:
@@ -304,7 +307,9 @@ class TestCostTracker:
         """Test budget checking."""
         tracker = CostTracker(db_path=temp_db)
 
-        cost = APICost("openai", "completion", "gpt-4", 1000, 5.0, "2025-01-19T12:00:00")
+        # check_budget() sums today's and this month's rows, so stamp it now.
+        now = datetime.utcnow().replace(microsecond=0).isoformat()
+        cost = APICost("openai", "completion", "gpt-4", 1000, 5.0, now)
         tracker.track_cost(cost)
 
         budget_status = tracker.check_budget(daily_limit=10.0, monthly_limit=100.0)

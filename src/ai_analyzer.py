@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import openai
 import json
 from .unicode_utils import normalize_json_response
+from .model_config import get_model
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ class PodcastHighlight:
 class AIAnalyzer:
     """Analyzes transcriptions to extract insights and highlights."""
     
-    def __init__(self, api_key: str, model: str = "gpt-4-turbo-preview"):
+    def __init__(self, api_key: str, model: Optional[str] = None):
         """
         Initialize AI analyzer.
         
@@ -41,7 +42,7 @@ class AIAnalyzer:
             model: GPT model to use for analysis
         """
         self.client = openai.OpenAI(api_key=api_key)
-        self.model = model
+        self.model = model or get_model("GPT_MODEL")
     
     def extract_highlights(
         self, 
@@ -167,7 +168,7 @@ class AIAnalyzer:
             
             try:
                 response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model=get_model("GPT_FAST_MODEL"),
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.9,
                     response_format={"type": "json_object"}
@@ -217,7 +218,7 @@ class AIAnalyzer:
             
             try:
                 response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
+                    model=get_model("GPT_FAST_MODEL"),
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
                     response_format={"type": "json_object"}
