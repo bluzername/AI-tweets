@@ -24,7 +24,7 @@ psutil>=5.9.0
 
 # Sprint 2: Multi-model AI and quality improvements
 anthropic>=1.0.0
-google-genai>=1.0.0
+google-genai>=2.23.0
 
 # Optional: Local Whisper for unlimited transcription
 openai-whisper>=20231117
