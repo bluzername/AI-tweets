@@ -6,7 +6,7 @@ python-dotenv>=1.0.0
 requests>=2.34.2
 tenacity>=9.1.4
 youtube-transcript-api>=0.6.2
-rich>=13.0.0
+rich>=15.0.0
 
 # Viral content machine dependencies
 sqlalchemy>=2.0.0
