@@ -27,7 +27,7 @@ anthropic>=1.0.0
 google-genai>=2.23.0
 
 # Optional: Local Whisper for unlimited transcription
-openai-whisper>=20231117
+openai-whisper>=20250625
 
 # OSINT Handle Finder dependencies
 beautifulsoup4>=4.12.0
