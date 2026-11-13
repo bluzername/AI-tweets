@@ -23,7 +23,7 @@ schedule>=1.2.2
 psutil>=5.9.0
 
 # Sprint 2: Multi-model AI and quality improvements
-anthropic>=1.0.0
+anthropic>=2.6.0
 google-genai>=2.34.0
 
 # Optional: Local Whisper for unlimited transcription
