@@ -1,5 +1,5 @@
 # Minimal set to run tests/ (no torch, whisper, transformers or librosa)
-pytest>=9.1.1
+pytest>=9.2.0
 pytest-cov>=7.1.0
 psutil>=7.2.2
 sqlalchemy>=2.0.0
