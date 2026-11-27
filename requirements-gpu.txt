@@ -5,7 +5,7 @@
 
 # PyTorch with CUDA support (must be installed before openai-whisper)
 torch>=2.14.1
-torchaudio>=2.0.0
+torchaudio>=2.11.1
 
 # Core dependencies
 openai>=1.12.0
